@@ -12,42 +12,42 @@ datasource db {
 
 // ============ 用户 ============
 model User {
-  id        Int      @id @default(autoincrement())
-  username  String   @unique @db.VarChar(50)      // 登录名
-  password  String   @db.VarChar(200)             // bcrypt 哈希
-  nickname  String?  @db.VarChar(50)              // 昵称
-  role      String   @default("user") @db.VarChar(20) // admin / user
-  status    Int      @default(1)                  // 1 启用 0 禁用
+  id          Int       @id @default(autoincrement())
+  username    String    @unique @db.VarChar(50) // 登录名
+  password    String    @db.VarChar(200) // bcrypt 哈希
+  nickname    String?   @db.VarChar(50) // 昵称
+  role        String    @default("user") @db.VarChar(20) // admin / user
+  status      Int       @default(1) // 1 启用 0 禁用
   lastLoginAt DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  tasks     CollectTask[]
-  presets   FilterPreset[]
+  tasks   CollectTask[]
+  presets FilterPreset[]
 
   @@map("users")
 }
 
 // ============ 采集任务 ============
 model CollectTask {
-  id          Int       @id @default(autoincrement())
-  name        String    @db.VarChar(200)          // 任务名
-  url         String    @db.VarChar(1000)         // 榜单地址
-  scrolls     Int       @default(20)              // 滚动屏数
-  step        Int       @default(900)             // 每屏滚动像素
-  status      String    @default("pending") @db.VarChar(20) // pending/running/success/failed
-  total       Int       @default(0)               // 采到的商品数
-  error       String?   @db.Text                  // 错误信息
-  logs        String?   @db.Text                  // 执行日志（按行）
-  startedAt   DateTime?
-  finishedAt  DateTime?
-  userId      Int?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id         Int       @id @default(autoincrement())
+  name       String    @db.VarChar(200) // 任务名
+  url        String    @db.VarChar(1000) // 榜单地址
+  scrolls    Int       @default(20) // 滚动屏数
+  step       Int       @default(900) // 每屏滚动像素
+  status     String    @default("pending") @db.VarChar(20) // pending/running/success/failed
+  total      Int       @default(0) // 采到的商品数
+  error      String?   @db.Text // 错误信息
+  logs       String?   @db.Text // 执行日志（按行）
+  startedAt  DateTime?
+  finishedAt DateTime?
+  userId     Int?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  user        User?     @relation(fields: [userId], references: [id])
-  metrics     ProductMetric[]
-  runs        ScreeningRun[]
+  user    User?           @relation(fields: [userId], references: [id])
+  metrics ProductMetric[]
+  runs    ScreeningRun[]
 
   @@index([status])
   @@index([createdAt])
@@ -56,52 +56,52 @@ model CollectTask {
 
 // ============ 商品 ============
 model Product {
-  id              Int      @id @default(autoincrement())
-  sku             String   @unique @db.VarChar(40)   // Ozon SKU
-  title           String?  @db.VarChar(500)          // 商品标题
-  brand           String?  @db.VarChar(100)          // 品牌
-  categoryPath    String?  @db.VarChar(300)          // 类目路径
-  category3Name   String?  @db.VarChar(200)          // 末级类目
-  price           Decimal? @db.Decimal(12, 2)        // 当前价（卢布）
-  currency        String   @default("RUB") @db.VarChar(10)
+  id            Int      @id @default(autoincrement())
+  sku           String   @unique @db.VarChar(40) // Ozon SKU
+  title         String?  @db.VarChar(500) // 商品标题
+  brand         String?  @db.VarChar(100) // 品牌
+  categoryPath  String?  @db.VarChar(300) // 类目路径
+  category3Name String?  @db.VarChar(200) // 末级类目
+  price         Decimal? @db.Decimal(12, 2) // 当前价（卢布）
+  currency      String   @default("RUB") @db.VarChar(10)
 
-  sellerId        String?  @db.VarChar(40)
-  sellerName      String?  @db.VarChar(200)
-  sellerCountry   String?  @db.VarChar(50)
-  isChinaSeller   Boolean  @default(false)
+  sellerId      String? @db.VarChar(40)
+  sellerName    String? @db.VarChar(200)
+  sellerCountry String? @db.VarChar(50)
+  isChinaSeller Boolean @default(false)
 
-  imageUrl        String?  @db.VarChar(1000)
-  productUrl      String?  @db.VarChar(1000)
+  imageUrl   String? @db.VarChar(1000)
+  productUrl String? @db.VarChar(1000)
 
-  rating          Decimal? @db.Decimal(3, 2)
-  reviewsCount    Int      @default(0)
-  salesSchema     String?  @db.VarChar(20)           // FBS / FBO / rFBS
+  rating       Decimal? @db.Decimal(3, 2)
+  reviewsCount Int      @default(0)
+  salesSchema  String?  @db.VarChar(20) // FBS / FBO / rFBS
 
-  sizeLengthMm    Int?
-  sizeWidthMm     Int?
-  sizeHeightMm    Int?
-  sizeWeightG     Int?
+  sizeLengthMm Int?
+  sizeWidthMm  Int?
+  sizeHeightMm Int?
+  sizeWeightG  Int?
 
   // ---- 最近一次采集到的核心指标（便于查询排序，历史值见 ProductMetric）----
-  soldCount        Int?     // 月销量
-  soldSum          Decimal? @db.Decimal(14, 2)  // 月销售额
-  drr              Decimal? @db.Decimal(6, 2)   // 广告费占比 %
-  daysWithTrafarets Int?                        // 付费推广天数
-  convToCartPdp    Decimal? @db.Decimal(6, 2)   // 商品卡加购率 %
-  convToCartSearch Decimal? @db.Decimal(6, 2)   // 搜索加购率 %
-  cancelRate       Decimal? @db.Decimal(6, 2)   // 退货取消率 %
-  createDays       Int?                         // 上架天数
-  daysInPromo      Int?
-  discount         Decimal? @db.Decimal(6, 2)
+  soldCount         Int? // 月销量
+  soldSum           Decimal? @db.Decimal(14, 2) // 月销售额
+  drr               Decimal? @db.Decimal(6, 2) // 广告费占比 %
+  daysWithTrafarets Int? // 付费推广天数
+  convToCartPdp     Decimal? @db.Decimal(6, 2) // 商品卡加购率 %
+  convToCartSearch  Decimal? @db.Decimal(6, 2) // 搜索加购率 %
+  cancelRate        Decimal? @db.Decimal(6, 2) // 退货取消率 %
+  createDays        Int? // 上架天数
+  daysInPromo       Int?
+  discount          Decimal? @db.Decimal(6, 2)
 
-  raw             Json?                          // 插件返回的完整原始数据
-  firstSeenAt     DateTime @default(now())
-  lastSeenAt      DateTime @default(now())
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  raw         Json? // 插件返回的完整原始数据
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  metrics         ProductMetric[]
-  screeningItems  ScreeningItem[]
+  metrics        ProductMetric[]
+  screeningItems ScreeningItem[]
 
   @@index([category3Name])
   @@index([soldCount])
@@ -112,23 +112,23 @@ model Product {
 
 // ============ 商品指标历史（每次采集留一条）============
 model ProductMetric {
-  id               Int      @id @default(autoincrement())
-  productId        Int
-  taskId           Int?
-  soldCount        Int?
-  soldSum          Decimal? @db.Decimal(14, 2)
-  drr              Decimal? @db.Decimal(6, 2)
+  id                Int      @id @default(autoincrement())
+  productId         Int
+  taskId            Int?
+  soldCount         Int?
+  soldSum           Decimal? @db.Decimal(14, 2)
+  drr               Decimal? @db.Decimal(6, 2)
   daysWithTrafarets Int?
-  convToCartPdp    Decimal? @db.Decimal(6, 2)
-  convToCartSearch Decimal? @db.Decimal(6, 2)
-  cancelRate       Decimal? @db.Decimal(6, 2)
-  createDays       Int?
-  rating           Decimal? @db.Decimal(3, 2)
-  reviewsCount     Int?
-  capturedAt       DateTime @default(now())
+  convToCartPdp     Decimal? @db.Decimal(6, 2)
+  convToCartSearch  Decimal? @db.Decimal(6, 2)
+  cancelRate        Decimal? @db.Decimal(6, 2)
+  createDays        Int?
+  rating            Decimal? @db.Decimal(3, 2)
+  reviewsCount      Int?
+  capturedAt        DateTime @default(now())
 
-  product          Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
-  task             CollectTask? @relation(fields: [taskId], references: [id])
+  product Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  task    CollectTask? @relation(fields: [taskId], references: [id])
 
   @@index([productId, capturedAt])
   @@index([taskId])
@@ -137,55 +137,164 @@ model ProductMetric {
 
 // ============ 筛选规则预设 ============
 model FilterPreset {
-  id            Int      @id @default(autoincrement())
-  name          String   @db.VarChar(100)
-  description   String?  @db.VarChar(500)
-  isDefault     Boolean  @default(false)
-  rules         Json                             // 阈值集合，见 src/modules/screening/rules.ts
-  userId        Int?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(100)
+  description String?  @db.VarChar(500)
+  isDefault   Boolean  @default(false)
+  rules       Json // 阈值集合，见 src/modules/screening/rules.ts
+  userId      Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  user          User?    @relation(fields: [userId], references: [id])
-  runs          ScreeningRun[]
+  user User?          @relation(fields: [userId], references: [id])
+  runs ScreeningRun[]
 
   @@map("filter_presets")
 }
 
 // ============ 筛选批次 ============
 model ScreeningRun {
-  id          Int      @id @default(autoincrement())
-  presetId    Int?
-  taskId      Int?
-  presetName  String   @db.VarChar(100)
-  rules       Json
-  total       Int      @default(0)                // 参与筛选的商品数
-  counts      Json?                               // 各分级数量
-  createdAt   DateTime @default(now())
+  id         Int      @id @default(autoincrement())
+  presetId   Int?
+  taskId     Int?
+  presetName String   @db.VarChar(100)
+  rules      Json
+  total      Int      @default(0) // 参与筛选的商品数
+  counts     Json? // 各分级数量
+  createdAt  DateTime @default(now())
 
-  preset      FilterPreset? @relation(fields: [presetId], references: [id])
-  task        CollectTask?  @relation(fields: [taskId], references: [id])
-  items       ScreeningItem[]
+  preset FilterPreset?   @relation(fields: [presetId], references: [id])
+  task   CollectTask?    @relation(fields: [taskId], references: [id])
+  items  ScreeningItem[]
 
   @@index([createdAt])
   @@map("screening_runs")
 }
 
+// ============ 物流渠道（核价用）============
+// 数据来源：《定价表模版》中的 GUOO / 兴远(XY) 物流资费试算表
+model LogisticsChannel {
+  id Int @id @default(autoincrement())
+
+  country  String  @db.VarChar(20) // RU 俄罗斯 / BY 白俄 / KZ 哈萨克 / KG 吉尔吉斯
+  vendor   String  @db.VarChar(20) // GUOO / XY(兴远)
+  category String  @db.VarChar(30) // Extra Small / Budget / Small / Big / Premium Small / Premium Big
+  name     String  @db.VarChar(200) // 渠道名称
+  shipMode String? @db.VarChar(30) // 运输方式：空运 / 陆空联运 / 陆运 / Express / Standard / Economy
+  delivery String? @db.VarChar(30) // 到取货点 PUDO / 到门 Courier
+
+  pricePerKg    Decimal @db.Decimal(10, 4) // 元/千克（XY 为运价系数 F = 元/克 × 1000）
+  pricePerOrder Decimal @db.Decimal(10, 4) // 元/票（挂号费 G）
+  priceText     String? @db.VarChar(100) // 原始表里的价格描述，便于核对
+
+  minWeightKg Decimal @default(0.001) @db.Decimal(10, 4)
+  maxWeightKg Decimal @default(30) @db.Decimal(10, 4)
+  minValueRub Decimal @default(0) @db.Decimal(14, 2)
+  maxValueRub Decimal @default(250000) @db.Decimal(14, 2)
+
+  maxSumCm       Int @default(310) // 三边之和上限
+  maxSideLongCm  Int @default(150) // 最长边上限
+  maxSideShortCm Int @default(150) // 其余两边上限
+
+  volumetric Boolean @default(false) // 是否计抛：计费重量取实重与体积重较大值
+  divisor    Int     @default(12000) // 抛比
+  roundUp    Boolean @default(false) // 是否向上取整到 2 位（XY 用 ROUNDUP）
+
+  etaDays String? @db.VarChar(30) // 时效
+  battery String? @db.VarChar(300) // 电池 / 禁运说明
+  note    String? @db.VarChar(500)
+  enabled Boolean @default(true)
+  sort    Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([country, vendor])
+  @@index([enabled])
+  @@map("logistics_channels")
+}
+
+// ============ 核价记录 ============
+model PricingRecord {
+  id   Int     @id @default(autoincrement())
+  name String? @db.VarChar(200) // 产品备注
+  sku  String? @db.VarChar(40) // 关联商品库 SKU（可空）
+
+  purchaseCost Decimal @default(0) @db.Decimal(12, 2) // 采购成本（元）
+  weightKg     Decimal @default(0) @db.Decimal(10, 4) // 实重 kg
+  lengthCm     Decimal @default(0) @db.Decimal(10, 2)
+  widthCm      Decimal @default(0) @db.Decimal(10, 2)
+  heightCm     Decimal @default(0) @db.Decimal(10, 2)
+
+  sellPrice    Decimal @default(0) @db.Decimal(12, 2) // 定价（元）
+  sellPriceRub Decimal @default(0) @db.Decimal(12, 2) // 定价（卢布）
+  exchangeRate Decimal @default(0.0862) @db.Decimal(10, 6) // 卢布 → 人民币
+
+  labelFee       Decimal @default(2) @db.Decimal(10, 2) // 贴单费
+  commissionRate Decimal @default(0.12) @db.Decimal(6, 4) // 平台佣金
+  agentRate      Decimal @default(0.035) @db.Decimal(6, 4) // Ozon 代理佣金
+  withdrawRate   Decimal @default(0.012) @db.Decimal(6, 4) // 提现费率
+
+  country     String? @db.VarChar(20)
+  vendor      String? @db.VarChar(20)
+  channelId   Int?
+  channelName String? @db.VarChar(200)
+  shipMode    String? @db.VarChar(30)
+  logistics   String? @db.VarChar(30) // 旧表「物流方式」列：陆空 / 陆运 …
+
+  shippingFee  Decimal @default(0) @db.Decimal(12, 2) // 国际运费
+  billWeightKg Decimal @default(0) @db.Decimal(10, 4) // 计费重量
+
+  grossProfit        Decimal @default(0) @db.Decimal(12, 2) // 毛利润
+  netProfit          Decimal @default(0) @db.Decimal(12, 2) // 净利润
+  profitRate         Decimal @default(0) @db.Decimal(10, 4) // 利润率 = 净利润 / 采购成本
+  freightProfitRatio Decimal @default(0) @db.Decimal(10, 4) // 运费利润比 = 净利润 / 国际运费
+  markup35           Decimal @default(0) @db.Decimal(12, 2) // 加 35% 参考价 = 定价 / 0.65
+
+  supplyUrl String? @db.VarChar(1000) // 货源链接
+  retailUrl String? @db.VarChar(1000) // 跟卖链接
+  remark    String? @db.VarChar(500)
+
+  userId    Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([sku])
+  @@map("pricing_records")
+}
+
+// ============ 核价默认参数（单条记录）============
+model PricingSetting {
+  id             Int      @id @default(1)
+  exchangeRate   Decimal  @default(0.0862) @db.Decimal(10, 6) // 1 卢布 = ? 人民币
+  rubPerCny      Decimal  @default(11.6) @db.Decimal(10, 4) // 1 人民币 = ? 卢布
+  labelFee       Decimal  @default(2) @db.Decimal(10, 2)
+  commissionRate Decimal  @default(0.12) @db.Decimal(6, 4)
+  agentRate      Decimal  @default(0.035) @db.Decimal(6, 4)
+  withdrawRate   Decimal  @default(0.012) @db.Decimal(6, 4)
+  defaultCountry String   @default("RU") @db.VarChar(20)
+  defaultVendor  String   @default("GUOO") @db.VarChar(20)
+  updatedAt      DateTime @updatedAt
+
+  @@map("pricing_settings")
+}
+
 // ============ 筛选结果明细 ============
 model ScreeningItem {
-  id          Int      @id @default(autoincrement())
-  runId       Int
-  productId   Int
-  score       Int      @default(0)
-  grade       Int      @default(0)                // 0 淘汰 1 优先跟进 2 可跟进 3 观察
-  tier        String   @db.VarChar(2)             // A / B / C / D
-  hardRules   Json?                               // 命中的硬性红线
-  reasons     Json?                               // 加分项说明
-  notes       Json?                               // 备注（如需卷价格）
-  createdAt   DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  runId     Int
+  productId Int
+  score     Int      @default(0)
+  grade     Int      @default(0) // 0 淘汰 1 优先跟进 2 可跟进 3 观察
+  tier      String   @db.VarChar(2) // A / B / C / D
+  hardRules Json? // 命中的硬性红线
+  reasons   Json? // 加分项说明
+  notes     Json? // 备注（如需卷价格）
+  createdAt DateTime @default(now())
 
-  run         ScreeningRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  product     Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  run     ScreeningRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  product Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@index([runId, grade])
   @@index([productId])

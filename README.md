@@ -19,7 +19,7 @@ Ozon 跨境选品的数据采集、商品库与智能筛选系统。
 ds/
 ├── backend/                          # NestJS 后端
 │   ├── prisma/schema.prisma          # 数据模型
-│   ├── prisma/seed.ts                # 初始管理员 + 默认规则预设
+│   ├── prisma/seed.ts                # 初始管理员 + 默认规则预设 + 物流渠道
 │   └── src/
 │       ├── main.ts                   # 入口（CORS / 全局过滤器 / Swagger）
 │       ├── app.module.ts
@@ -32,9 +32,12 @@ ds/
 │           ├── collect/             # 采集任务：滚动加载 → 读插件数据 → 入库
 │           ├── products/            # 商品库查询与指标历史
 │           ├── screening/           # 规则预设、打分分级、结果导出
+│           ├── pricing/             # 核价：物流渠道库 + 运费试算 + 利润核算
+│           │   ├── pricing.calc.ts  # 纯函数计算引擎（运费 / 利润 / 反算定价）
+│           │   └── channels.data.ts # 内置渠道种子（来自《定价表模版》）
 │           └── stats/               # 首页概览
 └── frontend/                         # Next.js 前端
-    └── src/app/{page,collect,products,screening}
+    └── src/app/{page,collect,products,screening,pricing}
 ```
 
 ## 快速开始
@@ -160,12 +163,52 @@ Ozon 前台不公开月销、加购率、退货率、上架天数、广告占比
 | 采集 | `POST /collect/tasks`、`GET /collect/tasks`、`GET /collect/tasks/:id`、`DELETE /collect/tasks/:id` |
 | 商品库 | `GET /products`、`GET /products/categories`、`GET /products/:sku`、`GET /products/:sku/history` |
 | 筛选 | `GET/POST/PATCH/DELETE /screening/presets`、`POST /screening/run`、`GET /screening/runs`、`GET /screening/runs/:id`、`GET /screening/runs/:id/export` |
+| 核价 | `GET /pricing/meta`、`GET/PATCH /pricing/settings`、`GET/POST/PATCH/DELETE /pricing/channels`、`POST /pricing/channels/reset`、`POST /pricing/quote`、`POST /pricing/calc`、`GET /pricing/from-product/:sku`、`GET/POST/PATCH/DELETE /pricing/records`、`GET /pricing/records/export` |
 | 概览 | `GET /stats/overview` |
+
+## 核价
+
+选完品之后要判断这个品能不能做，页面的入口在侧边栏「核价计算」。公式照搬原来的《定价表模版.xlsx》：
+
+```
+计费重量 = 计抛渠道 ? max(实重, 长×宽×高 / 12000) : 实重
+国际运费 = 计费重量 × 元/kg + 元/票        （兴远 XY 再 ROUNDUP 到 2 位）
+毛利润   = 定价 − 采购成本 − 国际运费 − 贴单费 − 定价×平台佣金 − 定价×Ozon代理佣金
+净利润   = 毛利润 − (采购成本 + 毛利润) × 提现费率
+利润率   = 净利润 / 采购成本
+运费利润比 = 净利润 / 国际运费
+加 35%   = 定价 / 0.65
+```
+
+页面一次算出当前国家下**所有可用渠道**的运费并排在一起对比，按净利润从高到低排；
+点某一行就把它的运费填进结果卡。填了「目标利润率」还会反算建议定价：
+
+```
+定价 = [目标净利润 + 采购成本×提现费率 + (采购成本+运费+贴单费)(1−提现费率)]
+       / [(1−平台佣金−代理佣金)(1−提现费率)]
+```
+
+**内置渠道**（111 条，来自模版，可在「物流渠道」页改）：
+
+| 国家 | GUOO | 兴远 XY |
+| --- | --- | --- |
+| 俄罗斯 | 15 | 36 |
+| 白俄罗斯 | 12 | — |
+| 哈萨克斯坦 | 12 | — |
+| 吉尔吉斯斯坦 | — | 36 |
+
+渠道按品类（Extra Small / Budget / Small / Big / Premium Small / Premium Big）校验
+重量区间、货值区间（₽）、三边之和、单边长度，不合规的渠道会直接给出原因。
+
+- 「核价记录」保存每次算完的结果，导出 CSV 的列头与原定价表完全一致
+- 「参数设置」里的汇率、贴单费、佣金、代理佣金、提现费率是核价页的默认值
+- 核价页可以填商品库里的 SKU，一键带出重量、三边尺寸和卢布售价
 
 ## 数据模型
 
-`users`、`collect_tasks`、`products`、`product_metrics`、`filter_presets`、`screening_runs`、`screening_items`
+`users`、`collect_tasks`、`products`、`product_metrics`、`filter_presets`、`screening_runs`、`screening_items`、`logistics_channels`、`pricing_records`、`pricing_settings`
 
 - `products` 存每个 SKU 的最新状态（含 60+ 字段的原始 JSON 在 `raw` 列）
 - `product_metrics` 是时间序列，用于看一个品的月销/加购率变化趋势
 - `screening_runs` / `screening_items` 记录每一轮筛选的规则快照与逐条判定，可回溯对比
+- `logistics_channels` 是物流渠道库，`pricing_records` 是核价记录，`pricing_settings` 是默认参数（单条）

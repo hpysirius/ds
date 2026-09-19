@@ -10,6 +10,7 @@ import { CollectModule } from './modules/collect/collect.module';
 import { ProductsModule } from './modules/products/products.module';
 import { ScreeningModule } from './modules/screening/screening.module';
 import { StatsModule } from './modules/stats/stats.module';
+import { PricingModule } from './modules/pricing/pricing.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -25,6 +26,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     ProductsModule,
     ScreeningModule,
     StatsModule,
+    PricingModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
