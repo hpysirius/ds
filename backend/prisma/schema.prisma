@@ -1,0 +1,193 @@
+// Prisma schema —— 电商选品分析系统
+// learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 用户 ============
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique @db.VarChar(50)      // 登录名
+  password  String   @db.VarChar(200)             // bcrypt 哈希
+  nickname  String?  @db.VarChar(50)              // 昵称
+  role      String   @default("user") @db.VarChar(20) // admin / user
+  status    Int      @default(1)                  // 1 启用 0 禁用
+  lastLoginAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasks     CollectTask[]
+  presets   FilterPreset[]
+
+  @@map("users")
+}
+
+// ============ 采集任务 ============
+model CollectTask {
+  id          Int       @id @default(autoincrement())
+  name        String    @db.VarChar(200)          // 任务名
+  url         String    @db.VarChar(1000)         // 榜单地址
+  scrolls     Int       @default(20)              // 滚动屏数
+  step        Int       @default(900)             // 每屏滚动像素
+  status      String    @default("pending") @db.VarChar(20) // pending/running/success/failed
+  total       Int       @default(0)               // 采到的商品数
+  error       String?   @db.Text                  // 错误信息
+  logs        String?   @db.Text                  // 执行日志（按行）
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  userId      Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user        User?     @relation(fields: [userId], references: [id])
+  metrics     ProductMetric[]
+  runs        ScreeningRun[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("collect_tasks")
+}
+
+// ============ 商品 ============
+model Product {
+  id              Int      @id @default(autoincrement())
+  sku             String   @unique @db.VarChar(40)   // Ozon SKU
+  title           String?  @db.VarChar(500)          // 商品标题
+  brand           String?  @db.VarChar(100)          // 品牌
+  categoryPath    String?  @db.VarChar(300)          // 类目路径
+  category3Name   String?  @db.VarChar(200)          // 末级类目
+  price           Decimal? @db.Decimal(12, 2)        // 当前价（卢布）
+  currency        String   @default("RUB") @db.VarChar(10)
+
+  sellerId        String?  @db.VarChar(40)
+  sellerName      String?  @db.VarChar(200)
+  sellerCountry   String?  @db.VarChar(50)
+  isChinaSeller   Boolean  @default(false)
+
+  imageUrl        String?  @db.VarChar(1000)
+  productUrl      String?  @db.VarChar(1000)
+
+  rating          Decimal? @db.Decimal(3, 2)
+  reviewsCount    Int      @default(0)
+  salesSchema     String?  @db.VarChar(20)           // FBS / FBO / rFBS
+
+  sizeLengthMm    Int?
+  sizeWidthMm     Int?
+  sizeHeightMm    Int?
+  sizeWeightG     Int?
+
+  // ---- 最近一次采集到的核心指标（便于查询排序，历史值见 ProductMetric）----
+  soldCount        Int?     // 月销量
+  soldSum          Decimal? @db.Decimal(14, 2)  // 月销售额
+  drr              Decimal? @db.Decimal(6, 2)   // 广告费占比 %
+  daysWithTrafarets Int?                        // 付费推广天数
+  convToCartPdp    Decimal? @db.Decimal(6, 2)   // 商品卡加购率 %
+  convToCartSearch Decimal? @db.Decimal(6, 2)   // 搜索加购率 %
+  cancelRate       Decimal? @db.Decimal(6, 2)   // 退货取消率 %
+  createDays       Int?                         // 上架天数
+  daysInPromo      Int?
+  discount         Decimal? @db.Decimal(6, 2)
+
+  raw             Json?                          // 插件返回的完整原始数据
+  firstSeenAt     DateTime @default(now())
+  lastSeenAt      DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  metrics         ProductMetric[]
+  screeningItems  ScreeningItem[]
+
+  @@index([category3Name])
+  @@index([soldCount])
+  @@index([createDays])
+  @@index([lastSeenAt])
+  @@map("products")
+}
+
+// ============ 商品指标历史（每次采集留一条）============
+model ProductMetric {
+  id               Int      @id @default(autoincrement())
+  productId        Int
+  taskId           Int?
+  soldCount        Int?
+  soldSum          Decimal? @db.Decimal(14, 2)
+  drr              Decimal? @db.Decimal(6, 2)
+  daysWithTrafarets Int?
+  convToCartPdp    Decimal? @db.Decimal(6, 2)
+  convToCartSearch Decimal? @db.Decimal(6, 2)
+  cancelRate       Decimal? @db.Decimal(6, 2)
+  createDays       Int?
+  rating           Decimal? @db.Decimal(3, 2)
+  reviewsCount     Int?
+  capturedAt       DateTime @default(now())
+
+  product          Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  task             CollectTask? @relation(fields: [taskId], references: [id])
+
+  @@index([productId, capturedAt])
+  @@index([taskId])
+  @@map("product_metrics")
+}
+
+// ============ 筛选规则预设 ============
+model FilterPreset {
+  id            Int      @id @default(autoincrement())
+  name          String   @db.VarChar(100)
+  description   String?  @db.VarChar(500)
+  isDefault     Boolean  @default(false)
+  rules         Json                             // 阈值集合，见 src/modules/screening/rules.ts
+  userId        Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User?    @relation(fields: [userId], references: [id])
+  runs          ScreeningRun[]
+
+  @@map("filter_presets")
+}
+
+// ============ 筛选批次 ============
+model ScreeningRun {
+  id          Int      @id @default(autoincrement())
+  presetId    Int?
+  taskId      Int?
+  presetName  String   @db.VarChar(100)
+  rules       Json
+  total       Int      @default(0)                // 参与筛选的商品数
+  counts      Json?                               // 各分级数量
+  createdAt   DateTime @default(now())
+
+  preset      FilterPreset? @relation(fields: [presetId], references: [id])
+  task        CollectTask?  @relation(fields: [taskId], references: [id])
+  items       ScreeningItem[]
+
+  @@index([createdAt])
+  @@map("screening_runs")
+}
+
+// ============ 筛选结果明细 ============
+model ScreeningItem {
+  id          Int      @id @default(autoincrement())
+  runId       Int
+  productId   Int
+  score       Int      @default(0)
+  grade       Int      @default(0)                // 0 淘汰 1 优先跟进 2 可跟进 3 观察
+  tier        String   @db.VarChar(2)             // A / B / C / D
+  hardRules   Json?                               // 命中的硬性红线
+  reasons     Json?                               // 加分项说明
+  notes       Json?                               // 备注（如需卷价格）
+  createdAt   DateTime @default(now())
+
+  run         ScreeningRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([runId, grade])
+  @@index([productId])
+  @@map("screening_items")
+}

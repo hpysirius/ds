@@ -1,0 +1,19 @@
+# 可选：如果本机还没有 MySQL 容器，用这个起一个
+# 当前环境已存在 playlish-mysql（root/root123，端口 3306），数据库 ds
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ds-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: ds
+      TZ: Asia/Shanghai
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      - '3306:3306'
+    volumes:
+      - ds_mysql_data:/var/lib/mysql
+
+volumes:
+  ds_mysql_data:
