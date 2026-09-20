@@ -7,52 +7,7 @@ import { CreateTaskDto } from './dto/create-task.dto';
 import { QueryTaskDto } from './dto/query-task.dto';
 
 /** 从插件注入的属性里读商品数据的 JS 片段 */
-const GRAB_JS = `JSON.stringify([].slice.call(document.querySelectorAll('[data-s2-card-data-json]')).map(function(e){
-  try{
-    var d = JSON.parse(e.getAttribute('data-s2-card-data-json'));
-    var p = e, url = '', name = '';
-    for (var i = 0; i < 10 && p; i++) {
-      var as = p.querySelectorAll ? p.querySelectorAll('a[href*="/product/"]') : [];
-      var best = null;
-      for (var k = 0; k < as.length; k++) {
-        var tx = ((as[k].getAttribute('aria-label') || as[k].innerText || '') + '').trim();
-        if (!best || tx.length > best.length) best = tx;
-        if (!url) url = as[k].href || '';
-      }
-      if (best) name = best;
-      if (url) break;
-      p = p.parentElement;
-    }
-    var q = e, img = null;
-    for (var j = 0; j < 10 && q; j++) {
-      img = q.querySelector ? q.querySelector('img[alt]') : null;
-      if (img) break;
-      q = q.parentElement;
-    }
-    var alt = img ? (img.getAttribute('alt') || '').trim() : '';
-    if (alt.length > 12 && alt.length > (name || '').length) name = alt;
-    d.__title = name || '';
-    d.__url = url || '';
-    /*
-     * 主图：插件数据里只有部分商品带 imageUrl，这里从卡片 DOM 兜底抓一次。
-     * 踩过的坑：直接取 img.src 会抓到
-     *   - 懒加载占位图：data:image/png;base64,...（一大串 base64 存进库，界面显示不出）
-     *   - 采集插件自己的图标：chrome-extension://xxx/new.png
-     * 所以必须：优先 srcset/data-src、只接受 http(s)、排除 data:/chrome-extension:/blob:。
-     */
-    try {
-      if (!d.imageUrl && img) {
-        var cand = img.getAttribute('srcset') || img.getAttribute('data-src') || img.getAttribute('src') || '';
-        var first = cand ? cand.split(',')[0].trim().split(' ')[0] : '';
-        if (first && /^https?:\/\//.test(first) === false && first.indexOf('//') === 0) first = 'https:' + first;
-        if (first && /^https?:\/\//i.test(first) && !/chrome-extension:|data:|blob:/i.test(first)) {
-          d.__image = first;
-        }
-      }
-    } catch (e2) {}
-    return d;
-  } catch (err) { return null }
-}).filter(Boolean))`;
+const GRAB_JS = "JSON.stringify([].slice.call(document.querySelectorAll('[data-s2-card-data-json]')).map(function(e){try{var d=JSON.parse(e.getAttribute('data-s2-card-data-json'));var p=e,url='',name='';for(var i=0;i<10&&p;i++){var as=p.querySelectorAll?p.querySelectorAll('a[href*=\"/product/\"]'):[];var best=null;for(var k=0;k<as.length;k++){var tx=((as[k].getAttribute('aria-label')||as[k].innerText||'')+'').trim();if(!best||tx.length>best.length)best=tx;if(!url)url=as[k].href||''}if(best)name=best;if(url)break;p=p.parentElement}var q=e,img=null;for(var j=0;j<10&&q;j++){img=q.querySelector?q.querySelector('img[alt]'):null;if(img)break;q=q.parentElement}var alt=img?(img.getAttribute('alt')||'').trim():'';if(alt.length>12&&alt.length>(name||'').length)name=alt;d.__title=name||'';d.__url=url||'';try{if(!d.imageUrl&&img){var cand=img.getAttribute('srcset')||img.getAttribute('data-src')||img.getAttribute('src')||'';var first=cand?cand.split(',')[0].trim().split(' ')[0]:'';if(first&&/^https?:\\/\\//.test(first)===false&&first.indexOf('//')===0)first='https:'+first;if(first&&/^https?:\\/\\//i.test(first)&&!/chrome-extension:|data:|blob:/i.test(first)){d.__image=first}}}catch(e2){}return d}catch(err){return null}}).filter(Boolean))";
 
 const num = (v: any): number | null => {
   if (v === null || v === undefined || v === '') return null;
@@ -272,13 +227,7 @@ export class CollectService implements OnModuleInit {
         let busy = 0;
         while (Date.now() - t0 < budgetMs) {
           const probe = await ev(
-            `JSON.stringify({
-              rs: document.readyState,
-              cards: document.querySelectorAll('[data-s2-card-data-json]').length,
-              title: (document.title || '').slice(0, 50),
-              url: location.href,
-              captcha: /captcha|antibot|робот|подтвердите|доступ ограничен/i.test((document.body && document.body.innerText || '').slice(0, 4000))
-            })`,
+            "JSON.stringify({rs:document.readyState,cards:document.querySelectorAll('[data-s2-card-data-json]').length,title:(document.title||'').slice(0,50),url:location.href,captcha:/captcha|antibot|робот|подтвердите|доступ ограничен/i.test((document.body&&document.body.innerText||'').slice(0,4000))})",
             6000,
           );
           if (probe === '__TIMEOUT__') {
@@ -364,19 +313,7 @@ export class CollectService implements OnModuleInit {
          * Ozon 榜单页的商品列表在**内层容器**里，只 window.scrollBy 是加载不出下一页的（实测滚 3 屏还是 16 条）。
          */
         await ev(
-          `(function(){
-            var el = document.scrollingElement || document.documentElement;
-            window.scrollTo(0, el.scrollHeight);
-            var best = null, bestRange = 0;
-            var all = document.querySelectorAll('div');
-            for (var i = 0; i < all.length; i++) {
-              var d = all[i];
-              var range = d.scrollHeight - d.clientHeight;
-              if (range > 300 && d.clientHeight > 250 && range > bestRange) { best = d; bestRange = range; }
-            }
-            if (best) best.scrollTop = best.scrollHeight;
-            return JSON.stringify({y: window.scrollY, inner: best ? best.scrollTop : -1});
-          })()`,
+          "(function(){var el=document.scrollingElement||document.documentElement;window.scrollTo(0,el.scrollHeight);var best=null,bestRange=0;var all=document.querySelectorAll('div');for(var i=0;i<all.length;i++){var d=all[i];var range=d.scrollHeight-d.clientHeight;if(range>300&&d.clientHeight>250&&range>bestRange){best=d;bestRange=range}}if(best)best.scrollTop=best.scrollHeight;return JSON.stringify({y:window.scrollY,inner:best?best.scrollTop:-1})})()",
           8000,
         );
         // 等"新卡片出现"最多 8 秒（比固定 sleep 又快又稳：出来了就立刻继续）

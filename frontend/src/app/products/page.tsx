@@ -24,6 +24,8 @@ export default function ProductsPage() {
   const [form] = Form.useForm();
 
   const [filling, setFilling] = useState(false);
+  /** 单条补图时记录哪个 sku 在抓（按钮转 loading） */
+  const [fillingSku, setFillingSku] = useState<string | null>(null);
 
   /** 补商品主图：先让后端从已有数据里捡，再用调试浏览器抓缺的（每张约 10 秒，分批发） */
   const fillImages = async () => {
@@ -54,6 +56,26 @@ export default function ProductsPage() {
       message.error(e.message);
     } finally {
       setFilling(false);
+    }
+  };
+
+  /** 单条补主图：调 product-image 接口，用调试浏览器打开商品页抓 og:image（约 10-15 秒） */
+  const fillOneImage = async (sku: string) => {
+    setFillingSku(sku);
+    const hide = message.loading(`正在为 ${sku} 抓主图…（约 10-15 秒，打开 Ozon 商品页读 og:image）`, 0);
+    try {
+      const { data } = await http.post('/pricing/sourcing/product-image', { sku }, { timeout: 120000 });
+      if (data?.imageUrl) {
+        message.success(`${sku} 主图已补上`, 2);
+        await load();
+      } else {
+        message.warning(`${sku} 没抓到主图（可能页面加载超时或被反爬挡住）`, 5);
+      }
+    } catch (e: any) {
+      message.error(`${sku} 补图失败：${e.message}`, 5);
+    } finally {
+      hide();
+      setFillingSku(null);
     }
   };
 
@@ -289,15 +311,23 @@ export default function ProductsPage() {
             {
               title: '操作',
               key: 'op',
-              width: 150,
+              width: 200,
               fixed: 'right',
               render: (_: any, r: any) => (
-                <Space size={4}>
-                  <Button type="link" size="small" onClick={() => router.push(`/pricing?sku=${r.sku}`)}>
+                <Space size={4} wrap>
+                  <Button type="link" size="small" onClick={() => window.open(`/pricing?sku=${r.sku}`, '_blank')}>
                     核价
                   </Button>
-                  <Button type="link" size="small" onClick={() => router.push(`/pricing?sku=${r.sku}&auto=1`)}>
+                  <Button type="link" size="small" onClick={() => window.open(`/pricing?sku=${r.sku}&auto=1`, '_blank')}>
                     自动核价
+                  </Button>
+                  <Button
+                    type="link"
+                    size="small"
+                    loading={fillingSku === r.sku}
+                    onClick={() => fillOneImage(r.sku)}
+                  >
+                    补主图
                   </Button>
                 </Space>
               ),
