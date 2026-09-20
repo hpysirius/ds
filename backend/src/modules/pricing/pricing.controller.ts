@@ -8,6 +8,8 @@ import {
   CreateRecordDto,
   ImageSearchDto,
   KeywordSearchDto,
+  FillImagesDto,
+  ImportExcelDto,
   OfferFetchDto,
   SaveCookieDto,
   PriceDto,
@@ -111,6 +113,26 @@ export class PricingController {
   }
 
   // ---- 找货源：1688（纯 HTTP 为主） ----
+  @Public()
+  @Get('sourcing/image-proxy')
+  @ApiOperation({ summary: '图片代理（Ozon 图有防盗链/CORS，前端复制到剪贴板要走这里）' })
+  async imageProxy(@Query('url') url: string, @Res() res: Response) {
+    const r = await this.sourcingService.proxyImage(url);
+    res.setHeader('Content-Type', r.contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    // 全局 CORS 会带上 Allow-Credentials，和 ACAO:* 组合会被浏览器判为非法，这里去掉
+    res.removeHeader('Access-Control-Allow-Credentials');
+    res.send(r.body);
+  }
+
+  @Public()
+  @Post('products/fill-images')
+  @ApiOperation({ summary: '补商品主图：先从 raw 捡，再用浏览器抓缺的（限流分批）' })
+  fillImages(@Body() dto: FillImagesDto) {
+    return this.sourcingService.fillMissingProductImages(dto.limit ?? 5);
+  }
+
   @Public()
   @Get('sourcing/cookie-status')
   @ApiOperation({ summary: '查看 1688 登录态是否已同步' })
@@ -230,6 +252,12 @@ export class PricingController {
   }
 
   @Public()
+  @Post('records/import-excel')
+  @ApiOperation({ summary: '从 Excel《定价表》导入定价记录（按 工作表!行号 幂等）' })
+  importExcel(@Body() dto: ImportExcelDto) {
+    return this.pricingService.importPricingExcel(dto.path, dto.sheet || '定价表', dto.replace === true);
+  }
+
   @Get('records/export')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   @ApiOperation({ summary: '导出核价表 CSV（列头与原定价表一致）' })

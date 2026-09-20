@@ -18,6 +18,7 @@ import {
   suggestSellPrice,
   vendorLabel,
 } from './pricing.calc';
+import { parsePricingSheet } from './excel-import';
 import {
   CalcDto,
   CreateRecordDto,
@@ -603,11 +604,120 @@ export class PricingService {
       categoryPath: dto.categoryPath ?? null,
       offer1688Title: dto.offer1688Title ?? null,
       weightSource: dto.weightSource ?? null,
+      mark: dto.mark ?? null,
+      weightText: dto.weightText ?? null,
+      sizeText: dto.sizeText ?? null,
+      source: dto.source ?? 'workbench',
+      excelRef: dto.excelRef ?? null,
       userId: userId ?? null,
     };
     const data = this.recompute(base);
     const row = await this.prisma.pricingRecord.create({ data });
     return this.fmtRecord(row);
+  }
+
+  /**
+   * 从《9月定价表》这类 Excel 导入「定价表」工作表 → 定价记录。
+   * 幂等：按 excelRef（工作表!行号）判重，重复导入只跳过、不重复插入。
+   * 表里已有的净利润/毛利润/利润率等**以表为准**（原表才是用户的口径），表里没有才算。
+   */
+  async importPricingExcel(filePath: string, sheetName = '定价表', replace = false) {
+    const settings = await this.getSettings();
+    // 重导：先清掉之前从 Excel 导进来的记录（工作台手工存的记录不动）
+    const removed = replace ? (await this.prisma.pricingRecord.deleteMany({ where: { source: 'excel' } })).count : 0;
+    const rate = num(settings.exchangeRate) || 0.0862;
+    const rows = parsePricingSheet(filePath, sheetName);
+    let created = 0;
+    let skipped = 0;
+    const samples: any[] = [];
+
+    for (const r of rows) {
+      const exists = await this.prisma.pricingRecord.findFirst({ where: { excelRef: r.excelRef } });
+      if (exists) {
+        skipped++;
+        continue;
+      }
+      const purchaseCost = r.purchaseCost ?? 0;
+      const sellPrice = r.sellPrice ?? 0;
+      const commissionRate = r.commissionRate ?? 0.12;
+      const agentRate = r.agentRate ?? 0.035;
+      const shippingFee = r.shippingFee ?? 0;
+      const labelFee = r.labelFee ?? 2;
+      // 反推加价率，让记录和我们的模型一致（算不出来就用默认值）
+      let markupRate = 0.1;
+      if (purchaseCost > 0) {
+        const m = (sellPrice * (1 - commissionRate - agentRate) - shippingFee - labelFee) / purchaseCost - 1;
+        if (Number.isFinite(m) && m > -0.9 && m < 3) markupRate = Number(m.toFixed(4));
+      }
+
+      const base: any = {
+        name: r.remark ?? null,
+        sku: r.sku ?? null,
+        purchaseCost,
+        weightKg: r.weightKg ?? 0,
+        lengthCm: r.lengthCm ?? 0,
+        widthCm: r.widthCm ?? 0,
+        heightCm: r.heightCm ?? 0,
+        sellPrice,
+        sellPriceRub: sellPrice > 0 ? Number((sellPrice / rate).toFixed(2)) : 0,
+        exchangeRate: rate,
+        markupRate,
+        labelFee,
+        commissionRate,
+        agentRate,
+        withdrawRate: r.withdrawRate ?? 0.012,
+        shippingFee,
+        billWeightKg: r.weightKg ?? 0,
+        logistics: r.logistics ?? null,
+        shipMode: r.logistics ?? null,
+        country: 'RU',
+        supplyUrl: r.supplyUrl ?? null,
+        retailUrl: r.retailUrl ?? null,
+        remark: r.remark ?? null,
+        categoryPath: r.remark ?? null,
+        offer1688Title: r.offer1688Title ?? null,
+        weightSource: '定价表(Excel)',
+        mark: r.mark ?? null,
+        weightText: r.weightText ?? null,
+        sizeText: r.sizeText ?? null,
+        source: 'excel',
+        excelRef: r.excelRef,
+      };
+
+      const data = this.recompute(base);
+      // 表里有值就用表里的
+      const keep: Array<[string, number | null | undefined]> = [
+        ['grossProfit', r.grossProfit],
+        ['netProfit', r.netProfit],
+        ['profitRate', r.profitRate],
+        ['freightProfitRatio', r.freightProfitRatio],
+        ['markup35', r.markup35],
+      ];
+      for (const [k, v] of keep) if (v != null) data[k] = v;
+
+      const row = await this.prisma.pricingRecord.create({ data });
+      created++;
+      if (samples.length < 3) {
+        samples.push({
+          row: r.row,
+          sku: r.sku,
+          sellPrice,
+          purchaseCost,
+          weightText: r.weightText,
+          sizeText: r.sizeText,
+        });
+      }
+    }
+
+    return {
+      sheet: sheetName,
+      file: filePath,
+      removed,
+      total: rows.length,
+      created,
+      skipped,
+      samples,
+    };
   }
 
   async updateRecord(id: number, dto: UpdateRecordDto) {
@@ -658,6 +768,10 @@ export class PricingService {
       '货源链接',
       '加价率',
       '货源标题',
+      '重量(原文)',
+      '尺寸(原文)',
+      '来源',
+      '原表位置',
     ];
     const esc = (v: any) => {
       const s = v == null ? '' : String(v);
@@ -668,7 +782,7 @@ export class PricingService {
       const size = `${num(r.lengthCm)}*${num(r.widthCm)}*${num(r.heightCm)}`;
       lines.push(
         [
-          i + 1,
+          r.mark || i + 1,
           num(r.markup35).toFixed(2),
           num(r.sellPrice).toFixed(2),
           num(r.purchaseCost).toFixed(2),
@@ -682,13 +796,15 @@ export class PricingService {
           num(r.profitRate).toFixed(4),
           num(r.freightProfitRatio).toFixed(4),
           r.logistics || r.shipMode || '',
-          r.weightG ? `${r.weightG}g` : `${num(r.weightKg)}kg`,
-          size,
+          r.weightText || (r.weightG ? `${r.weightG}g` : `${num(r.weightKg)}kg`),
+          r.sizeText || size,
           r.name || '',
           r.retailUrl || '',
           r.supplyUrl || '',
           num(r.markupRate),
           r.offer1688Title || '',
+          r.source || '',
+          r.excelRef || '',
         ]
           .map(esc)
           .join(','),

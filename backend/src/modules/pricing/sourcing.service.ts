@@ -6,6 +6,7 @@ import { BrowserService } from '../browser/browser.service';
 import { CdpClient } from '../collect/lib/cdp.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  DESKTOP_UA,
   SearchItem,
   cacheGet,
   cacheSet,
@@ -70,6 +71,110 @@ export class SourcingService {
     private readonly prisma: PrismaService,
   ) {}
 
+  /**
+   * 补商品主图：先把已有 raw JSON 里的 imageUrl 捡回来（免费、瞬时），
+   * 剩下的再用调试浏览器打开 Ozon 商品页抓 og:image（慢，每次约 10 秒，所以按 limit 分批）。
+   */
+  async fillMissingProductImages(limit = 5) {
+    // ① 从 raw 里捡（插件数据其实带图，只是没见过列的映射）
+    let fromRaw = 0;
+    try {
+      fromRaw = await this.prisma.$executeRawUnsafe(
+        `UPDATE products SET imageUrl = JSON_UNQUOTE(JSON_EXTRACT(raw, '$.imageUrl'))
+         WHERE imageUrl IS NULL AND JSON_EXTRACT(raw, '$.imageUrl') IS NOT NULL`,
+      );
+    } catch (e) {
+      /* 忽略 */
+    }
+
+    // ② 还缺的，用浏览器抓
+    const rows = await this.prisma.product.findMany({
+      where: { imageUrl: null },
+      orderBy: { id: 'desc' },
+      take: Math.max(0, Math.min(limit, 20)),
+      select: { id: true, sku: true, productUrl: true },
+    });
+    // 先把之前残留的 Ozon 商品标签关掉（只留榜单页），否则标签越堆越多、渲染进程不够用
+    try {
+      const ver0 = await this.browser.version();
+      const cdp0 = new CdpClient(new URL(ver0.webSocketDebuggerUrl));
+      await cdp0.connect();
+      const tg0 = await cdp0.send('Target.getTargets', {}, undefined, 8000);
+      let kept = 0;
+      for (const t of tg0.result?.targetInfos || []) {
+        if (t.type !== 'page' || !/ozon\.ru\/product\//.test(t.url || '')) continue;
+        if (kept++ === 0) continue; // 留一个
+        await cdp0.send('Target.closeTarget', { targetId: t.targetId }, undefined, 5000).catch(() => undefined);
+      }
+      cdp0.close();
+    } catch (e) {
+      /* ignore */
+    }
+
+    const filled: string[] = [];
+    const failed: string[] = [];
+    const failedDetail: Array<{ sku: string; reason: string }> = [];
+    if (rows.length) await this.ensureBrowser();
+    for (let i = 0; i < rows.length; i++) {
+      const p = rows[i];
+      // 每次打开 Ozon 商品页之间歇一下：连续快速请求会触发 Ozon 反爬，导致后续页面渲染进程卡死
+      if (i > 0) await sleep(3000);
+      try {
+        const url = p.productUrl || `https://www.ozon.ru/product/${p.sku}/`;
+        const r = await this.fetchProductImage(url);
+        // 再校验一次：只写真正的商品图，脏地址（data:/chrome-extension:）绝不入库
+        const ok =
+          !!r.imageUrl && /^https?:\/\//i.test(r.imageUrl) && !/chrome-extension:|^data:|^blob:/i.test(r.imageUrl);
+        if (ok) {
+          await this.prisma.product.update({ where: { id: p.id }, data: { imageUrl: r.imageUrl } });
+          filled.push(p.sku);
+        } else {
+          failed.push(p.sku);
+          if (failedDetail.length < 3) failedDetail.push({ sku: p.sku, reason: r.reason || '未读到主图' });
+        }
+      } catch (e: any) {
+        failed.push(p.sku);
+        if (failedDetail.length < 3) failedDetail.push({ sku: p.sku, reason: String(e.message || e).slice(0, 120) });
+      }
+    }
+    const remaining = await this.prisma.product.count({ where: { imageUrl: null } });
+    return { fromRaw, filled, failed, failedDetail, remaining };
+  }
+
+  /**
+   * 图片代理：Ozon / 1688 的图都有防盗链或跨域限制，前端要「复制图片到剪贴板」
+   * 得先从同源接口拿到 blob，所以这里帮忙转一手。
+   */
+  async proxyImage(url: string): Promise<{ contentType: string; body: Buffer }> {
+    const u = String(url || '').trim();
+    if (!/^https?:\/\//i.test(u)) throw new BadRequestException('图片地址不合法');
+    const res = await fetch(u, {
+      headers: {
+        'User-Agent': DESKTOP_UA,
+        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        Referer: /ozon/.test(u) ? 'https://www.ozon.ru/' : 'https://www.1688.com/',
+      },
+    });
+    if (!res.ok) throw new BadRequestException(`图片拉取失败 HTTP ${res.status}`);
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    if (!/^image\//i.test(contentType)) throw new BadRequestException('不是图片内容');
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 8 * 1024 * 1024) throw new BadRequestException('图片过大（>8MB）');
+    return { contentType, body: buf };
+  }
+
+  /**
+   * 需要调试浏览器时自动拉起（幂等）。
+   * 配置已经复制过的情况下，不会要求你退出正在运行的 Chrome —— 调试实例是独立目录。
+   */
+  private async ensureBrowser(): Promise<{ started: boolean }> {
+    const st = await this.browser.status();
+    if (st.portUp) return { started: false };
+    const r = await this.browser.ensure();
+    if (!r.ok) throw new BadRequestException(r.msg);
+    return { started: true };
+  }
+
   // ==================== 1688 登录态（cookie） ====================
 
   /** 读取存库的 1688 cookie */
@@ -90,28 +195,45 @@ export class SourcingService {
 
   /**
    * 从「浏览器接管」的调试 Chrome 里把 1688 登录态同步过来（一次性动作）。
-   * 这里只读 cookie，不打开页面、不渲染、不爬 DOM —— 所以很快，也不会卡。
+   *
+   * 坑：Chrome 的 cookie 库是**懒加载**的 —— 新启动的实例直接读 `Storage.getCookies`
+   * 会返回 0 条，必须先打开一个 1688 页面把它唤醒（实测：唤醒后 1600+ 条，其中 1688 有 31 条）。
    */
   async syncCookieFromChrome(): Promise<{ ok: boolean; cookieCount: number; msg: string }> {
-    const st = await this.browser.status();
-    if (!st.portUp) {
-      throw new BadRequestException(
-        '调试 Chrome 未就绪：请到「浏览器接管」页启动浏览器（只需一次，用来取 1688 登录态）。',
-      );
-    }
+    // 需要浏览器时自动拉起（配置已就绪的情况下不用退出你自己的 Chrome）
+    await this.ensureBrowser();
     const ver = await this.browser.version();
     const cdp = new CdpClient(new URL(ver.webSocketDebuggerUrl));
     await cdp.connect();
     try {
-      // 优先浏览器级 Storage.getCookies（不需要页面 target）
-      let cookies: any[] = [];
-      try {
-        const res = await cdp.send('Storage.getCookies', {}, undefined, 15000);
-        cookies = res.result?.cookies || [];
-      } catch (e) {
-        /* 退回页面级 */
+      const readAll = async (): Promise<any[]> => {
+        try {
+          const res = await cdp.send('Storage.getCookies', {}, undefined, 15000);
+          return res.result?.cookies || [];
+        } catch (e) {
+          return [];
+        }
+      };
+
+      /** 打开一个 1688 页面，唤醒 cookie 库 */
+      const wake = async () => {
+        const tg = await cdp.send('Target.getTargets', {}, undefined, 8000);
+        const has1688 = (tg.result?.targetInfos || []).some(
+          (t: any) => t.type === 'page' && /1688\.com/.test(t.url || ''),
+        );
+        if (has1688) return false;
+        await cdp.send('Target.createTarget', { url: 'https://www.1688.com/' }, undefined, 8000);
+        return true;
+      };
+
+      let cookies = await readAll();
+      if (!cookies.some((c) => /(^|\.)1688\.com$/.test(String(c.domain || '')))) {
+        if (await wake()) await sleep(6000);
+        cookies = await readAll();
       }
-      if (!cookies.some((c) => /1688/.test(String(c.domain || '')))) {
+
+      // 还读不到就退到「页面级」的 Network.getCookies
+      if (!cookies.some((c) => /(^|\.)1688\.com$/.test(String(c.domain || '')))) {
         const tg = await cdp.send('Target.getTargets', {}, undefined, 8000);
         const page =
           (tg.result?.targetInfos || []).find((t: any) => t.type === 'page' && /1688/.test(t.url || '')) ||
@@ -132,10 +254,11 @@ export class SourcingService {
           cookies = r.result?.cookies || [];
         }
       }
+
       const ali = cookies.filter((c) => /(^|\.)1688\.com$/.test(String(c.domain || '')));
       if (!ali.length) {
         throw new BadRequestException(
-          '调试 Chrome 里没有 1688 的 cookie：请先在这个 Chrome 里打开并登录 1688，再同步。',
+          '调试 Chrome 里没有 1688 的 cookie：请在弹出的调试 Chrome 窗口里打开并登录 1688，再同步一次。',
         );
       }
       const header = ali.map((c) => `${c.name}=${c.value}`).join('; ');
@@ -268,17 +391,14 @@ export class SourcingService {
     fn: (cdp: CdpClient, sessionId: string, ev: (expr: string, tries?: number) => Promise<any>) => Promise<T>,
     settleMs = 8000,
   ): Promise<T> {
-    const st = await this.browser.status();
-    if (!st.portUp) {
-      throw new BadRequestException(
-        '调试 Chrome 未就绪：请到「浏览器接管」页启动浏览器（1688 搜索需要在带登录态的浏览器里进行）。',
-      );
-    }
+    await this.ensureBrowser();
     const ver = await this.browser.version();
     const cdp = new CdpClient(new URL(ver.webSocketDebuggerUrl));
     await cdp.connect();
+    let openedTargetId: string | null = null;
     try {
-      const created = await cdp.send('Target.createTarget', { url }, undefined, 8000);
+      const created = await cdp.send('Target.createTarget', { url }, undefined, 20000);
+      openedTargetId = created.result?.targetId || null;
       const attached = await cdp.send(
         'Target.attachToTarget',
         { targetId: created.result.targetId, flatten: true },
@@ -296,11 +416,18 @@ export class SourcingService {
         /* ignore */
       }
 
+      /*
+       * 必须把它切到最前！Chrome 会节流/冻结"后台标签"的渲染进程，
+       * 表现就是 Runtime.evaluate 一直超时 —— 补主图失败、采集卡死都是这个原因。
+       */
+      await cdp.send('Page.bringToFront', {}, sessionId, 8000).catch(() => undefined);
+
       /**
        * 页面 JS 求值。踩过的坑：Ozon / 1688 这种重页面（还带插件注入）渲染进程会忙到
-       * 让 Runtime.evaluate 长时间不回包，所以这里必须带超时 + 重试，不能一次等到死。
+       * 让 Runtime.evaluate 长时间不回包。单次求值可能要 7-8 秒，所以 timeout 必须给到
+       * 12 秒（原来只给 6 秒 → 必超时 → readImage 一直拿 null → 补图失败，实测对比过）。
        */
-      const rawEval = async (expr: string, timeoutMs = 6000): Promise<any> => {
+      const rawEval = async (expr: string, timeoutMs = 12000): Promise<any> => {
         const r = await cdp.send(
           'Runtime.evaluate',
           { expression: expr, returnByValue: true },
@@ -314,17 +441,23 @@ export class SourcingService {
           try {
             return await rawEval(expr);
           } catch (e) {
-            await sleep(600);
+            await sleep(800);
           }
         }
         return undefined;
       };
 
-      // 不要一上来就睡十几秒：一边等一边轮询，页面一能求值就继续
-      for (let i = 0; i < 16; i++) {
-        const state = await rawEval('document.readyState', 4000);
-        if (state) break;
-        await sleep(700);
+      // 不要一上来就睡十几秒：一边等一边轮询，页面一能求值就继续。
+      // 注意：这里的超时必须 catch 住，否则单次超时会直接把整个 withPage 打挂
+      // （5800250870 的 "CDP 命令超时: Runtime.evaluate" 就是这里漏了 try/catch）。
+      for (let i = 0; i < 20; i++) {
+        try {
+          const state = await rawEval('document.readyState', 6000);
+          if (state) break;
+        } catch (e) {
+          /* 页面还在跑重 JS，继续等 */
+        }
+        await sleep(800);
       }
 
       // 登录 / 风控检测
@@ -337,6 +470,13 @@ export class SourcingService {
 
       return await fn(cdp, sessionId, ev);
     } finally {
+      /*
+       * 用完就把标签关掉。踩过的坑：每次抓图都新开一个 Ozon 商品页且不关，
+       * 十来个重页面把渲染进程池占满后，新标签直接不响应（求值全部抛异常 → 补图失败）。
+       */
+      if (openedTargetId) {
+        await cdp.send('Target.closeTarget', { targetId: openedTargetId }, undefined, 6000).catch(() => undefined);
+      }
       try {
         cdp.close();
       } catch (e) {
@@ -510,40 +650,53 @@ export class SourcingService {
     fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
     const b64 = fs.readFileSync(file).toString('base64');
 
+    // 浏览器刚被自动拉起时，profile + 插件还在加载，CDP 求值会大量超时，先预热一下
+    const { started } = await this.ensureBrowser();
+    if (started) {
+      warnings.push('调试浏览器是刚启动的，等它稳定 8 秒…');
+      await sleep(8000);
+    }
+
     const pageUrl = 'https://air.1688.com/kapp/1688-search/pc-image-search/?tab=imageSearch';
     const uploaded = await this.withPage(
       pageUrl,
       async (_cdp, _sessionId, ev) => {
-        // 等上传框出现（页面一能求值就抢，重页面 10 秒后就不回包了）
-        let found = false;
-        for (let i = 0; i < 30 && !found; i++) {
-          found = (await ev(`!!document.querySelector('input[type=file]')`, 1)) === true;
-          if (!found) await sleep(400);
+        const injectJs = `(() => {
+          const b64 = 'REPLACE_B64';
+          const bin = atob(b64);
+          const arr = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          const dt = new DataTransfer();
+          dt.items.add(new File([arr], 'search.jpg', { type: 'image/jpeg' }));
+          const inputs = [...document.querySelectorAll('input[type=file]')];
+          let n = 0;
+          inputs.forEach((inp) => {
+            try { inp.files = dt.files; inp.dispatchEvent(new Event('change', { bubbles: true })); n++; } catch (e) {}
+          });
+          return n;
+        })()`;
+
+        // 探测上传框 + 注入，整体预算 60 秒；注入失败会重试（重页面求值经常超时，不能只试一次）
+        const deadline = Date.now() + 60000;
+        let injected = 0;
+        let sawInput = false;
+        while (Date.now() < deadline) {
+          const has = await ev(`!!document.querySelector('input[type=file]')`, 2);
+          if (has !== true) {
+            await sleep(600);
+            continue;
+          }
+          sawInput = true;
+          const n = Number(await ev(injectJs.replace('REPLACE_B64', b64), 3));
+          if (n > 0) {
+            injected = n;
+            break;
+          }
+          await sleep(2500); // 页面正忙，缓一下再试
         }
-        if (!found) {
-          warnings.push('没找到上传入口，请在浏览器里手动上传图片搜款。');
-          return false;
-        }
-        // 用 DataTransfer 造 File 直接塞进去（DOM.setFileInputFiles 在重页面上会挂）
-        const r = await ev(
-          `(() => {
-            const b64 = '${b64}';
-            const bin = atob(b64);
-            const arr = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-            const dt = new DataTransfer();
-            dt.items.add(new File([arr], 'search.jpg', { type: 'image/jpeg' }));
-            const inputs = [...document.querySelectorAll('input[type=file]')];
-            let n = 0;
-            inputs.forEach((inp) => {
-              try { inp.files = dt.files; inp.dispatchEvent(new Event('change', { bubbles: true })); n++; } catch (e) {}
-            });
-            return n;
-          })()`,
-          2,
-        );
-        if (!r) warnings.push('图片没能塞进上传框，请在浏览器里手动上传。');
-        return Number(r) > 0;
+        if (!sawInput) warnings.push('没找到上传入口，请在浏览器里手动上传图片搜款。');
+        else if (!injected) warnings.push('图片没能塞进上传框，请在浏览器里手动上传。');
+        return injected > 0;
       },
       0,
     );
@@ -557,7 +710,9 @@ export class SourcingService {
   async scanTabs(): Promise<{ items: ImageSearchItem[]; warnings: string[]; tabs: string[] }> {
     const st = await this.browser.status();
     if (!st.portUp) {
-      throw new BadRequestException('调试 Chrome 未就绪：请先在「浏览器接管」页启动浏览器。');
+      throw new BadRequestException(
+        '调试浏览器还没在运行：点一下「以图搜款」会自动启动它（首次需要退出 Chrome 复制配置，之后不用）。',
+      );
     }
     const ver = await this.browser.version();
     const cdp = new CdpClient(new URL(ver.webSocketDebuggerUrl));
@@ -683,31 +838,53 @@ export class SourcingService {
    * 抓 Ozon 商品主图（插件数据里没有图片，需要打开商品页拿 og:image / 首图）
    * 拿到后回写商品库，下次直接用。
    */
-  async fetchProductImage(target: string): Promise<{ imageUrl: string | null }> {
+  async fetchProductImage(target: string): Promise<{ imageUrl: string | null; reason?: string }> {
     let url = String(target || '').trim();
     if (!url) throw new BadRequestException('缺少商品链接或 SKU');
-    if (/^\d{6,}$/.test(url)) url = `https://www.ozon.ru/product/${url}/`;
+    if (/^\d{6,}$/.test(url)) {
+      url = `https://www.ozon.ru/product/${url}/`;
+    } else if (url.includes('ozon.')) {
+      /*
+       * 关键：必须把 URL 规范成干净形式 https://www.ozon.ru/product/<id>/。
+       * 分享/带跟踪参数的链接（?_bctx=...&at=...）会被 Ozon 送进反爬校验页，
+       * 表现就是等 90 秒也读不到 og:image（补图失败的真凶，实测对比过）。
+       */
+      const id = (url.match(/-(\d{6,})\/?(\?|$)/) || url.match(/product\/(\d{6,})/) || url.match(/(\d{6,})/))?.[1];
+      if (id) url = `https://www.ozon.ru/product/${id}/`;
+    }
 
-    return this.withPage(url, async (_cdp, _sessionId, ev) => {
-      await this.waitFor(
-        ev,
-        `!!document.querySelector('meta[property="og:image"], img[src*="ozone.ru"]')`,
-        12000,
-        800,
-      );
-      const img = await ev(`(() => {
-        const meta = document.querySelector('meta[property="og:image"]');
-        const fromMeta = meta && meta.getAttribute('content');
-        if (fromMeta && /^https?:/.test(fromMeta)) return fromMeta;
-        const imgs = [...document.querySelectorAll('img')]
-          .map(i => i.getAttribute('src') || '')
-          .filter(s => /ozone\\.ru|cdn/.test(s));
-        if (!imgs.length) return 'null';
-        return imgs[0].startsWith('//') ? 'https:' + imgs[0] : imgs[0];
-      })()`);
-      const imageUrl = img && img !== 'null' ? String(img) : null;
-      return { imageUrl };
-    }, 10000);
+    /*
+     * Ozon 商品页要跑约 90 秒重度 JS（期间渲染进程根本不回 CDP），所以必须给足耐心：
+     * 轮询 og:image 最多 90 秒。原来只等 12 秒 → 必然失败（"补图失败"就是这么来的）。
+     * 同时只接受真正的商品图地址，data:/chrome-extension: 这类占位图/扩展图标一律不要。
+     */
+    return this.withPage(
+      url,
+      async (_cdp, _sessionId, ev) => {
+        const readImage = async (): Promise<string | null> => {
+          /* 单行表达式：多行模板字面量在 CDP 传输时可能出问题（实测 SyntaxError），压成一行最稳 */
+          const img = await ev(
+            "(function(){var m=document.querySelector('meta[property=\"og:image\"]');var f=m&&m.getAttribute('content');if(f&&/^https?:/i.test(f))return f;var is=[].slice.call(document.querySelectorAll('img')).map(function(i){return i.getAttribute('src')||''}).filter(function(s){return /^https?:\\/\\//i.test(s)&&/ozonstatic|ozone.ru|ozon.ru/.test(s)});if(!is.length)return 'null';return is[0]})()",
+          );
+          const v = img && img !== 'null' && img !== '__TIMEOUT__' ? String(img) : null;
+          if (!v) return null;
+          if (!/^https?:\/\//i.test(v)) return null;
+          if (/chrome-extension:|^data:|^blob:/i.test(v)) return null;
+          return v;
+        };
+
+        let tries = 0;
+        const deadline = Date.now() + 90000;
+        while (Date.now() < deadline) {
+          tries++;
+          const found = await readImage();
+          if (found) return { imageUrl: found };
+          await sleep(2000);
+        }
+        return { imageUrl: null, reason: `等了 90 秒仍没读到商品主图（尝试 ${tries} 次）：页面可能在跑反爬校验，或该商品页异常` };
+      },
+      3000,
+    );
   }
 
   /**

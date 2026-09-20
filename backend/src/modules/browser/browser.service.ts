@@ -82,7 +82,13 @@ export class BrowserService {
     const script =
       '#!/bin/bash\n' +
       `exec "${this.chromeBin}" --remote-debugging-port=${this.port} --remote-allow-origins=* ` +
-      `--user-data-dir=${this.profileDir} --no-first-run --no-default-browser-check\n`;
+      `--user-data-dir=${this.profileDir} --no-first-run --no-default-browser-check ` +
+      /*
+       * 防节流：浏览器被别的窗口盖住/不在最前时，Chrome 会节流甚至冻结后台标签的渲染进程，
+       * 表现就是 CDP 求值一直超时、页面永远加载不出来（采集卡死的真凶之一）。
+       */
+      '--disable-background-timer-throttling --disable-backgrounding-occluded-windows ' +
+      '--disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion\n';
     fs.writeFileSync(path.join(this.appDir, 'Contents/MacOS/ChromeDebug'), script, { mode: 0o755 });
     fs.writeFileSync(
       path.join(this.appDir, 'Contents/Info.plist'),
@@ -129,7 +135,19 @@ export class BrowserService {
 
     if (await this.portUp()) return { ok: true, msg: '调试端口已就绪', logs };
 
-    if (!this.profileReady()) {
+    const needCopy = !this.profileReady();
+
+    if (needCopy) {
+      // 只有「第一次要复制配置」时才需要用户退出 Chrome（Chrome 在跑时配置目录可能被写）
+      if (this.chromeRunning()) {
+        return {
+          ok: false,
+          msg:
+            '首次使用需要复制一份 Chrome 配置（带上你的登录态），请先完全退出 Chrome（Cmd+Q）后再点一次；' +
+            '这件事只做一次，之后就再也不用退出了。',
+          logs,
+        };
+      }
       push('首次运行：复制 Chrome 配置（保留插件与登录态，约 40 秒）…');
       fs.mkdirSync(this.profileDir, { recursive: true });
       const excludes = [
@@ -146,28 +164,35 @@ export class BrowserService {
         .join(' ');
       execSync(`rsync -a ${excludes} '${this.realProfile}/' '${this.profileDir}/'`, { shell: '/bin/bash' });
       push('配置复制完成');
-    }
-
-    if (this.chromeRunning()) {
-      return {
-        ok: false,
-        msg: 'Chrome 正在运行并占用配置目录。请先完全退出 Chrome（Cmd+Q），再重新启动浏览器。',
-        logs,
-      };
+    } else {
+      /*
+       * 配置已经是独立的 user-data-dir 了，所以**不需要**用户退出正在运行的 Chrome：
+       * 调试实例和常规实例是两份目录，可以并存（实测：常规 Chrome 开着也能起来）。
+       * 原来那种「Chrome 在跑就拒绝启动」的守卫太严，导致每次都要手动去页面点。
+       */
+      if (this.chromeRunning()) push('检测到你自己的 Chrome 也在运行 —— 不影响，调试实例用的是独立配置目录');
     }
 
     this.writeWrapperApp();
-    push('启动带调试端口的 Chrome…');
+    push('自动启动带调试端口的 Chrome…');
     execSync(`open "${this.appDir}"`, { shell: '/bin/bash' });
 
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 1000));
       if (await this.portUp()) {
         push('浏览器已就绪');
-        return { ok: true, msg: '已启动', logs };
+        return { ok: true, msg: '已自动启动', logs };
       }
     }
     return { ok: false, msg: '启动超时，请检查 Chrome 是否被其它进程占用', logs };
+  }
+
+  /** 给「找货源」这类流程用：需要浏览器时自动拉起，不满足条件才报错 */
+  async ensureReady(): Promise<void> {
+    const st = await this.status();
+    if (st.portUp) return;
+    const r = await this.ensure();
+    if (!r.ok) throw new Error(r.msg);
   }
 
   async version() {

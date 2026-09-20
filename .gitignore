@@ -6,3 +6,5 @@ out/
 *.log
 uploads/
 .DS_Store
+
+run/

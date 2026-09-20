@@ -76,10 +76,33 @@ npm run dev                     # http://localhost:3100
 
 | 场景 | 用哪个 | 说明 |
 | --- | --- | --- |
-| 日常使用 | 双击 `一键启动.command` | 生产模式。缺构建产物会自动 build，然后起前后端并打开页面 |
+| 日常使用 | 双击 `一键启动.command` 或 `bash start.sh` | 生产模式。缺构建产物会自动 build，然后起前后端 |
 | 只起一边 | `启动后端.command` / `启动前端.command` | 同样会自动补齐构建产物；端口被占用时会提示 |
 | 改代码调试 | 双击 `开发模式.command` | `nest start --watch` + `next dev`，热更新 |
-| 停止 | `停止服务.command` | 释放 3100 / 3101 端口 |
+| 停止 | `bash stop.sh`（或双击 `停止服务.command`） | 释放 3100 / 3101；`--chrome` 顺带关调试 Chrome |
+| 重启 | `bash restart.sh` | 等价于 stop + start |
+
+```bash
+cd /Users/huanghui/Documents/huanghui/gitee/ds
+
+bash start.sh              # 后台常驻启动（缺构建产物会自动 build），跑完就返回
+bash start.sh --foreground # 前台启动，Ctrl-C 停止（= 双击「一键启动.command」的行为）
+bash start.sh --open       # 启动后打开浏览器
+bash start.sh --no-build   # 缺产物也不编译，快速起
+bash restart.sh            # 重启（stop + start）
+bash stop.sh               # 停前后端
+bash stop.sh --chrome      # 顺带关掉调试 Chrome（9222），不影响你的常规 Chrome
+bash stop.sh -h            # 帮助
+```
+
+脚本分层：根目录 `start.sh` / `stop.sh` / `restart.sh` 是快捷入口，
+真正逻辑在 `scripts/start.sh` / `scripts/stop.sh` / `scripts/restart.sh`；
+`一键启动.command` 与 `停止服务.command` 也只是转调 `scripts/*.sh`，
+**双击和命令行的行为完全一致**。
+
+- 日志：`/tmp/ds-backend.log`、`/tmp/ds-frontend.log`；PID 写在 `run/backend.pid`、`run/frontend.pid`
+- `start.sh` 起来后会做**端口健康检查**（后端 30 秒、前端 60 秒），没起来会打印日志路径并返回 1
+- 都是幂等的：服务没跑再执行 stop 也返回成功；端口被**非本项目**进程占用时会明确提示且不做处理
 
 **注意 `npm run dev` 与 `npm run start` 不能直接混用：**
 `next dev` 会把 `.next` 改写成开发态（没有 `BUILD_ID`），此时再跑 `npm start` 会报
@@ -97,10 +120,11 @@ cd frontend && rm -rf .next && npm run build && npm run start
 解决：`cd frontend && rm -rf .next && npm run build`，然后重跑。启动脚本已内置自动检测，不会踩这个坑。
 
 **`EADDRINUSE :::3100` / `3101`** —— 端口被上次没退干净的进程占着（常见于 `npm` 被中断、但子进程 `next-server` / `dist/main` 还活着）。
-解决：双击 `停止服务.command`，或执行：
+解决：双击 `停止服务.command`，或命令行执行：
 
 ```bash
-bash scripts/free-ports.sh          # 只清理属于本项目的进程
+bash stop.sh                        # 停本项目的前后端（推荐）
+bash scripts/free-ports.sh          # 只清理端口，不碰其它进程
 lsof -nP -iTCP:3100 -sTCP:LISTEN   # 查看是谁占着
 ```
 
@@ -163,8 +187,19 @@ Ozon 前台不公开月销、加购率、退货率、上架天数、广告占比
 | 采集 | `POST /collect/tasks`、`GET /collect/tasks`、`GET /collect/tasks/:id`、`DELETE /collect/tasks/:id` |
 | 商品库 | `GET /products`、`GET /products/categories`、`GET /products/:sku`、`GET /products/:sku/history` |
 | 筛选 | `GET/POST/PATCH/DELETE /screening/presets`、`POST /screening/run`、`GET /screening/runs`、`GET /screening/runs/:id`、`GET /screening/runs/:id/export` |
-| 定价 | `GET /pricing/meta`、`GET/PATCH /pricing/settings`、`GET /pricing/products`、`GET/POST/PATCH/DELETE /pricing/channels`、`POST /pricing/channels/reset`、`POST /pricing/price`、`POST /pricing/quote`、`POST /pricing/calc`、`GET /pricing/sourcing/cookie-status`、`POST /pricing/sourcing/sync-cookie`、`POST /pricing/sourcing/search-keyword`、`POST /pricing/sourcing/prepare-search`、`POST /pricing/sourcing/trigger-search`、`POST /pricing/sourcing/scan-tabs`、`POST /pricing/sourcing/image-search`、`POST /pricing/sourcing/product-image`、`POST /pricing/sourcing/offer`、`GET /pricing/from-product/:sku`、`GET/POST/PATCH/DELETE /pricing/records`、`GET /pricing/records/export` |
+| 定价 | `GET /pricing/meta`、`GET/PATCH /pricing/settings`、`GET /pricing/products`、`GET/POST/PATCH/DELETE /pricing/channels`、`POST /pricing/channels/reset`、`POST /pricing/price`、`POST /pricing/quote`、`POST /pricing/calc`、`GET /pricing/sourcing/image-proxy`、`GET /pricing/sourcing/cookie-status`、`POST /pricing/sourcing/sync-cookie`、`POST /pricing/sourcing/search-keyword`、`POST /pricing/sourcing/prepare-search`、`POST /pricing/sourcing/trigger-search`、`POST /pricing/sourcing/scan-tabs`、`POST /pricing/sourcing/image-search`、`POST /pricing/sourcing/product-image`、`POST /pricing/sourcing/offer`、`GET /pricing/from-product/:sku`、`GET/POST/PATCH/DELETE /pricing/records`、`POST /pricing/products/fill-images`（补商品主图）、`POST /pricing/records/import-excel`（从 9月定价表 导入）、`GET /pricing/records/export` |
 | 概览 | `GET /stats/overview` |
+
+## 商品库主图
+
+商品库列表带 **44×44 缩略图**，标题最多显示 26 个字（超出省略号，鼠标悬浮看全文）。
+
+- 图片统一走同源代理 `GET /pricing/sourcing/image-proxy`（Ozon 图片直链有防盗链，直接 `<img src>` 会 403）
+- 采集脚本现在会**从卡片 DOM 兜底抓主图**（`GRAB_JS` 里取 `img.src/srcset`），落库时 `imageUrl || __image || images` 三级兜底
+  —— 插件的 `data-s2-card-data-json` 里只有部分商品带 `imageUrl`
+- 历史数据缺图的，列表右上角点「**补商品主图**」：后端先把已有 `raw` JSON 里的图片捡回来（瞬时），
+  剩下的用调试浏览器打开 Ozon 商品页抓 `og:image`（每张约 6~10 秒，分批 limit=5，可反复点）
+- 接口：`POST /pricing/products/fill-images { limit }` → `{ fromRaw, filled[], failed[], remaining }`
 
 ## 定价（选品 → 找货源 → 算定价）
 
@@ -175,8 +210,13 @@ Ozon 前台不公开月销、加购率、退货率、上架天数、广告占比
    - 登录态：1688 搜索需要 cookie，点「同步 1688 登录态」从调试 Chrome 里读一次存库即可（只读 cookie，不渲染页面），之后**全程不需要浏览器**
    - **三条找货源路径**（按推荐度）：
   1. **关键词搜同款**（纯 HTTP，0.5 秒出 20 条）—— 关键词用商品的中文末级类目，命中率最高
-  2. **以图搜款（更准）**：系统在调试 Chrome 里打开 1688 图搜页、自动把商品主图放进上传框、自动点「搜索图片」，你只要回系统点「读取浏览器里的结果」，系统会把浏览器里的 1688 货源接回来（标题/价格/包装仍是 HTTP 秒抓）
+  2. **以图搜款（更准）**：系统自动启动调试 Chrome → 打开 1688 图搜页 → **自动把商品主图放进上传框** → **自动点「搜索图片」** （这三步已实测可用；冷启动全程约 55 秒，热态更快）。1688 的图搜结果列表是前端渲染、抓不回 DOM，所以**你在浏览器里点开任意一个货源**，再回系统点「读取浏览器里的结果」，系统就能把那个货品链接接回来，标题/价格/包装仍是 HTTP 秒抓
+  2.5 **复制图片**：工作台点「复制图片」（或直接点商品缩略图）会把商品主图放进系统剪贴板，然后到调试 Chrome 的 1688 图搜页按 `Ctrl+V` 就能粘贴搜同款（比自动注入更可控）。图片走同源代理 `GET /pricing/sourcing/image-proxy`（Ozon 图有防盗链 + 跨域限制，前端拿不到 blob）。
   3. **直接粘贴 1688 链接** → 抓取（最稳，永远可用。Ozon 主图因服务端被 307 拦截，只能由浏览器抓一次）
+- **调试浏览器会自动拉起**：需要浏览器时（以图搜款 / 同步登录态）系统会自己启动带调试端口的 Chrome，
+  **不需要你先去「浏览器接管」页点启动**，也**不需要退出你自己的 Chrome**（调试实例用独立配置目录，两份可并存；
+  只有「第一次复制配置」时才要求退出一次）。冷启动约 12 秒，起来后会先预热 8 秒再驱动页面。
+  - 实现见 `BrowserService.ensure()`：只在 `profileReady=false` 时才要求关闭 Chrome，其余情况直接 `open` 包装 app
 - **1688 登录态**：搜索接口需要 cookie。两种方式任选：
   - 点「同步 1688 登录态」→ 系统从调试 Chrome 里读一次（只读 cookie、不渲染页面，0.15 秒）
   - 或点「粘贴 Cookie」手动粘贴：登录 1688 → F12 → Network → 刷新页面 → 点第一条 www.1688.com 请求 →
@@ -220,7 +260,8 @@ Ozon 前台不公开月销、加购率、退货率、上架天数、广告占比
 渠道按品类（Extra Small / Budget / Small / Big / Premium Small / Premium Big）校验
 重量区间、货值区间（₽）、三边之和、单边长度，不合规的渠道会直接给出原因。
 
-- 「定价记录」保存每次结果，导出 CSV 的列头与《9月定价表》一致（含加价率、货源标题）
+- 「定价记录」保存每次结果，导出 CSV 的列头与《9月定价表》一致
+- **「导入定价表」**：把《9月定价表.xlsx》的「定价表」工作表整表导入，字段逐列对齐（含 A 列标记、重量原文 `300g`/`10.5kg`、尺寸原文 `18.5cm * 7cm * 17cm`），按「工作表!行号」幂等，可勾「替换重导」。实现见 `backend/src/modules/pricing/excel-import.ts`（纯 Node，用系统 `unzip` 解 xlsx，不装依赖）
 - 「参数设置」里可改汇率、贴单费、佣金、代理佣金、提现费率与**成本加价率**（默认 10%）
 - 以图搜款依赖「浏览器接管」启动的调试 Chrome，且需要在这个 Chrome 里登录 1688；没登录或出现验证时接口会明确提示
 - 1688 抓取**默认走纯 HTTP**：货品详情页是 SSR、匿名可抓（0.6s），关键词搜索走 m.1688.com 的 SSR 页（需登录态 cookie，0.5s）

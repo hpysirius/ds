@@ -26,7 +26,7 @@ import {
   Tooltip,
   message,
 } from 'antd';
-import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DownloadOutlined, ImportOutlined, ReloadOutlined } from '@ant-design/icons';
 import WorkbenchTab from './Workbench';
 import { API_BASE, http } from '@/lib/api';
 
@@ -342,6 +342,35 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importPath, setImportPath] = useState('/Users/huanghui/Downloads/9月定价表.xlsx');
+  const [importSheet, setImportSheet] = useState('定价表');
+  const [importReplace, setImportReplace] = useState(false);
+  const [importResult, setImportResult] = useState<any>(null);
+
+  /** 从 Excel《定价表》导入（按「工作表!行号」幂等，可勾选替换重导） */
+  const doImport = async () => {
+    if (!importPath.trim()) {
+      message.warning('请填 xlsx 的绝对路径');
+      return;
+    }
+    setImporting(true);
+    try {
+      const { data } = await http.post('/pricing/records/import-excel', {
+        path: importPath.trim(),
+        sheet: importSheet.trim() || '定价表',
+        replace: importReplace,
+      });
+      setImportResult(data);
+      message.success(`导入完成：新增 ${data.created} 条，跳过 ${data.skipped} 条${data.removed ? `，先清掉 ${data.removed} 条旧导入` : ''}`);
+      await load();
+    } catch (e: any) {
+      message.error(e.message);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const load = useCallback(async () => {
     const { data } = await http.get('/pricing/records', { params: { page, pageSize: 20, keyword: keyword || undefined } });
@@ -354,6 +383,25 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
   }, [load, reloadKey]);
 
   const columns = [
+    {
+      title: '标记',
+      dataIndex: 'mark',
+      key: 'mark',
+      width: 92,
+      render: (v: any, r: any) =>
+        v ? (
+          <span>
+            <Tag color={r.source === 'excel' ? 'blue' : 'green'} style={{ marginRight: 4 }}>
+              {r.source === 'excel' ? '表' : '台'}
+            </Tag>
+            {v}
+          </span>
+        ) : r.source === 'excel' ? (
+          <Tag color="blue">表</Tag>
+        ) : (
+          '—'
+        ),
+    },
     {
       title: '产品',
       dataIndex: 'name',
@@ -384,8 +432,20 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
     { title: '利润率', dataIndex: 'profitRate', key: 'profitRate', width: 80, render: (v: any) => pct(v) },
     { title: '运费利润比', dataIndex: 'freightProfitRatio', key: 'freightProfitRatio', width: 100, render: (v: any) => pct(v) },
     { title: '加35%', dataIndex: 'markup35', key: 'markup35', width: 80, render: (v: any) => money(v) },
-    { title: '重量', dataIndex: 'weightKg', key: 'weightKg', width: 80, render: (v: any, r: any) => `${money(v, 3)}kg` },
-    { title: '尺寸(cm)', key: 'size', width: 110, render: (_: any, r: any) => `${r.lengthCm}×${r.widthCm}×${r.heightCm}` },
+    {
+      title: '重量',
+      dataIndex: 'weightText',
+      key: 'weightText',
+      width: 86,
+      render: (v: any, r: any) => v || `${money(r.weightKg, 3)}kg`,
+    },
+    {
+      title: '尺寸',
+      key: 'size',
+      width: 130,
+      render: (_: any, r: any) =>
+        r.sizeText || `${r.lengthCm || 0}×${r.widthCm || 0}×${r.heightCm || 0}cm`,
+    },
     {
       title: '链接',
       key: 'links',
@@ -426,6 +486,69 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
     },
   ];
 
+  const importModal = (
+    <Modal
+      open={importOpen}
+      onCancel={() => setImportOpen(false)}
+      onOk={doImport}
+      okText="开始导入"
+      confirmLoading={importing}
+      title="从 Excel《定价表》导入定价记录"
+      width={680}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="导入规则"
+        description={
+          <div style={{ fontSize: 13 }}>
+            读第 2 行表头、从第 3 行起逐行导入（A~T 列：序号/标记、加35%、定价、采购成本、国际运费、贴单费、
+            平台佣金、代理佣金、提现费率、净利润、毛利润、利润率、运费利润比、物流方式、重量、尺寸、产品备注、
+            跟卖链接、货源链接、跟卖链接URL）。<b>重复导入不会产生重复数据</b>（按「工作表!行号」判重）。
+          </div>
+        }
+      />
+      <Form layout="vertical">
+        <Form.Item label="xlsx 文件路径（本机绝对路径）" required>
+          <Input value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/Users/xxx/Downloads/9月定价表.xlsx" />
+        </Form.Item>
+        <Row gutter={12}>
+          <Col span={12}>
+            <Form.Item label="工作表名">
+              <Input value={importSheet} onChange={(e) => setImportSheet(e.target.value)} placeholder="定价表" />
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <Form.Item label="替换重导">
+              <Switch checked={importReplace} onChange={setImportReplace} />
+              <span style={{ marginLeft: 8, fontSize: 12, color: '#999' }}>
+                开启后会先清掉之前从 Excel 导入的记录（工作台手工存的保留）
+              </span>
+            </Form.Item>
+          </Col>
+        </Row>
+      </Form>
+      {importResult ? (
+        <Alert
+          type="success"
+          showIcon
+          message={`工作表「${importResult.sheet}」共 ${importResult.total} 行：新增 ${importResult.created}，跳过 ${importResult.skipped}`}
+          description={
+            <div style={{ fontSize: 12 }}>
+              {(importResult.samples || []).map((x: any, i: number) => (
+                <div key={i}>
+                  第 {x.row} 行：SKU {x.sku || '—'} · 定价 {x.sellPrice ?? '—'} · 成本 {x.purchaseCost ?? '—'} ·
+                  重量 {x.weightText || '—'} · 尺寸 {x.sizeText || '—'}
+                </div>
+              ))}
+            </div>
+          }
+        />
+      ) : null}
+    </Modal>
+  );
+
   return (
     <Card
       size="small"
@@ -433,6 +556,9 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
       extra={
         <Space>
           <Input.Search placeholder="产品/渠道" allowClear value={keyword} onChange={(e) => setKeyword(e.target.value)} onSearch={() => setPage(1)} style={{ width: 200 }} />
+          <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
+            导入定价表
+          </Button>
           <Button icon={<ReloadOutlined />} onClick={load} />
           <Button type="primary" icon={<DownloadOutlined />} href={`${API_BASE}/pricing/records/export`}>
             导出 CSV
@@ -440,6 +566,7 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
         </Space>
       }
     >
+      {importModal}
       <Table
         size="small"
         rowKey="id"

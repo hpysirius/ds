@@ -176,9 +176,41 @@ export class CreateRecordDto {
   @ApiPropertyOptional() @IsOptional() @IsString() categoryPath?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() offer1688Title?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() weightSource?: string;
+
+  // ---- 对齐原表（Excel）的列 ----
+  @ApiPropertyOptional({ description: '原表 A 列：序号/标记' }) @IsOptional() @IsString() mark?: string;
+  @ApiPropertyOptional({ description: '重量原文，如 300g / 10.5kg' }) @IsOptional() @IsString() weightText?: string;
+  @ApiPropertyOptional({ description: '尺寸原文，如 18.5cm * 7cm * 17cm' }) @IsOptional() @IsString() sizeText?: string;
+  @ApiPropertyOptional({ description: '来源：workbench / excel' }) @IsOptional() @IsString() source?: string;
+  @ApiPropertyOptional({ description: '来源定位：工作表!行号' }) @IsOptional() @IsString() excelRef?: string;
 }
 
 export class UpdateRecordDto extends CreateRecordDto {}
+
+export class FillImagesDto {
+  @ApiPropertyOptional({ description: '本次最多抓几张（用浏览器抓，每张约 10 秒，建议 5）' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  limit?: number;
+}
+
+export class ImportExcelDto {
+  @ApiProperty({ description: 'xlsx 的绝对路径' })
+  @IsString()
+  @IsNotEmpty()
+  path: string;
+
+  @ApiPropertyOptional({ description: '工作表名，默认「定价表」' })
+  @IsOptional()
+  @IsString()
+  sheet?: string;
+
+  @ApiPropertyOptional({ description: 'true = 先清掉之前从 Excel 导入的记录再导（重导用）' })
+  @IsOptional()
+  @IsBoolean()
+  replace?: boolean;
+}
 
 export class QueryRecordDto {
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() page?: number;

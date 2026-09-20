@@ -2,9 +2,16 @@
 
 import { useEffect, useState } from 'react';
 import { Button, Card, Col, Empty, Form, Input, InputNumber, Row, Select, Space, Table, Tag, Tooltip, message } from 'antd';
-import { CalculatorOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { CalculatorOutlined, DownloadOutlined, PictureOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
-import { http } from '@/lib/api';
+import { API_BASE, http } from '@/lib/api';
+
+/** 标题最多显示多少字（超出省略号，鼠标悬浮看全文） */
+const TITLE_MAX = 26;
+
+/** 图片走同源代理：Ozon 图片直链有防盗链，直接 img src 会 403 */
+const proxyImage = (u?: string | null) =>
+  u ? `${API_BASE}/pricing/sourcing/image-proxy?url=${encodeURIComponent(u)}` : '';
 
 export default function ProductsPage() {
   const router = useRouter();
@@ -15,6 +22,40 @@ export default function ProductsPage() {
   const [pageSize, setPageSize] = useState(20);
   const [categories, setCategories] = useState<{ label: string; value: string }[]>([]);
   const [form] = Form.useForm();
+
+  const [filling, setFilling] = useState(false);
+
+  /** 补商品主图：先让后端从已有数据里捡，再用调试浏览器抓缺的（每张约 10 秒，分批发） */
+  const fillImages = async () => {
+    setFilling(true);
+    let fromRaw = 0;
+    let grabbed = 0;
+    let lastDetail: any[] = [];
+    try {
+      for (let i = 0; i < 8; i++) {
+        const { data } = await http.post('/pricing/products/fill-images', { limit: 5 });
+        fromRaw += data?.fromRaw || 0;
+        lastDetail = data?.failedDetail || [];
+        grabbed += (data?.filled || []).length;
+        message.loading(`补图中… 浏览器已抓 ${grabbed} 张，还缺 ${data?.remaining ?? '?'} 个`, 0.8);
+        await load(1);
+        const got = (data?.filled || []).length;
+        if (data?.remaining === 0) break;
+        if (!got && i > 0) break; // 连续抓不到就别硬循环
+      }
+      const detail = (lastDetail || []).map((x: any) => `${x.sku}：${x.reason}`).join('；');
+      if (grabbed || fromRaw) {
+        message.success(`补图完成：从已有数据补回 ${fromRaw} 个，浏览器新抓 ${grabbed} 张${detail ? '｜失败：' + detail : ''}`, 6);
+      } else {
+        message.warning(`一张都没抓到。${detail ? '原因：' + detail : '请确认调试 Chrome 能正常打开 Ozon 页面（可能被反爬校验挡住）'}`, 8);
+      }
+      await load(1);
+    } catch (e: any) {
+      message.error(e.message);
+    } finally {
+      setFilling(false);
+    }
+  };
 
   const load = async (p = page, s = pageSize) => {
     setLoading(true);
@@ -136,9 +177,14 @@ export default function ProductsPage() {
         title={`共 ${total} 条`}
         size="small"
         extra={
-          <Button size="small" icon={<DownloadOutlined />} onClick={exportCsv} disabled={!list.length}>
-            导出当前页
-          </Button>
+          <Space>
+            <Button size="small" icon={<PictureOutlined />} loading={filling} onClick={fillImages}>
+              补商品主图
+            </Button>
+            <Button size="small" icon={<DownloadOutlined />} onClick={exportCsv} disabled={!list.length}>
+              导出当前页
+            </Button>
+          </Space>
         }
       >
         <Table
@@ -159,17 +205,53 @@ export default function ProductsPage() {
             {
               title: '商品',
               dataIndex: 'title',
-              ellipsis: true,
-              render: (t, r: any) => (
-                <div>
-                  <a href={r.productUrl} target="_blank" rel="noreferrer">
-                    {t || '(无标题)'}
-                  </a>
-                  <div style={{ fontSize: 11, color: '#8c8c8c' }} className="mono">
-                    {r.sku}
-                  </div>
-                </div>
-              ),
+              width: 320,
+              render: (t: any, r: any) => {
+                const title = String(t || '(无标题)');
+                const short = title.length > TITLE_MAX ? title.slice(0, TITLE_MAX) + '…' : title;
+                return (
+                  <Space size={8} align="start">
+                    {r.imageUrl ? (
+                      <a href={r.productUrl} target="_blank" rel="noreferrer">
+                        <img
+                          src={proxyImage(r.imageUrl)}
+                          alt=""
+                          loading="lazy"
+                          style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 4, background: '#f5f5f5' }}
+                        />
+                      </a>
+                    ) : (
+                      <Tooltip title="这个商品还没抓到主图（重新采集一次即可带上，或让系统抓一次）">
+                        <div
+                          style={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: 4,
+                            background: '#f5f5f5',
+                            color: '#bbb',
+                            fontSize: 10,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          无图
+                        </div>
+                      </Tooltip>
+                    )}
+                    <div style={{ maxWidth: 250 }}>
+                      <Tooltip title={title}>
+                        <a href={r.productUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13 }}>
+                          {short}
+                        </a>
+                      </Tooltip>
+                      <div style={{ fontSize: 11, color: '#8c8c8c' }} className="mono">
+                        {r.sku}
+                      </div>
+                    </div>
+                  </Space>
+                );
+              },
             },
             { title: '类目', dataIndex: 'category3Name', width: 130, ellipsis: true },
             { title: '品牌', dataIndex: 'brand', width: 100 },

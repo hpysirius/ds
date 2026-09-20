@@ -23,8 +23,8 @@ import {
   Tooltip,
   message,
 } from 'antd';
-import { LinkOutlined, SaveOutlined, SearchOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { http } from '@/lib/api';
+import { CopyOutlined, LinkOutlined, SaveOutlined, SearchOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { API_BASE, http } from '@/lib/api';
 
 const COUNTRIES = [
   { value: 'RU', label: '俄罗斯' },
@@ -75,6 +75,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   const [tabs, setTabs] = useState<string[]>([]);
   const [searchKw, setSearchKw] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [cookie, setCookie] = useState<any>(null);
   const [cookieOpen, setCookieOpen] = useState(false);
   const [cookieText, setCookieText] = useState('');
@@ -286,6 +287,72 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   };
 
   /** 手动收结果：用户自己在浏览器里搜完款后点这个 */
+  /** 走同源代理显示图片（Ozon 图有防盗链，直链经常 403） */
+  const proxyImage = (u?: string | null) =>
+    u ? `${API_BASE}/pricing/sourcing/image-proxy?url=${encodeURIComponent(u)}` : '';
+
+  /** 把 blob 统一转成 PNG（Chrome 剪贴板对 png 支持最稳） */
+  const blobToPng = (blob: Blob) =>
+    new Promise<Blob>((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth || 800;
+          c.height = img.naturalHeight || 800;
+          const ctx = c.getContext('2d');
+          if (!ctx) return reject(new Error('canvas 不可用'));
+          ctx.drawImage(img, 0, 0);
+          c.toBlob((b) => (b ? resolve(b) : reject(new Error('转 PNG 失败'))), 'image/png');
+        } catch (e) {
+          reject(e as Error);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('图片解码失败'));
+      };
+      img.src = url;
+    });
+
+  /**
+   * 复制商品主图到剪贴板 —— 复制完去调试 Chrome 的 1688 图搜页 Ctrl+V 就能搜同款。
+   * 已经点过「以图搜款」的话，图搜页已经开着并支持粘贴，两边配合用最顺。
+   */
+  const copyProductImage = async () => {
+    setCopying(true);
+    try {
+      let imageUrl = product?.imageUrl || form.getFieldValue('imageUrl');
+      if (!imageUrl) imageUrl = await ensureImage();
+      if (!imageUrl) {
+        message.warning('没有可用主图，先点「抓商品主图」');
+        return;
+      }
+
+      const canWrite =
+        typeof navigator !== 'undefined' &&
+        !!navigator.clipboard &&
+        typeof (window as any).ClipboardItem !== 'undefined';
+      if (!canWrite) throw new Error('当前浏览器不支持直接写剪贴板');
+
+      const res = await fetch(proxyImage(imageUrl));
+      if (!res.ok) throw new Error('取图失败');
+      const png = await blobToPng(await res.blob());
+      await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': png })]);
+      message.success('图片已复制 → 到调试 Chrome 的 1688 图搜页按 Ctrl+V 即可搜同款');
+    } catch (e: any) {
+      // 降级：新标签打开图片，右键复制也一样
+      const u = product?.imageUrl || form.getFieldValue('imageUrl');
+      if (u) window.open(proxyImage(u), '_blank');
+      message.warning(`${e.message}；已在新标签打开图片，右键「复制图片」即可`);
+    } finally {
+      setCopying(false);
+    }
+  };
+
   const scanTabs = async () => {
     setSearching(true);
     try {
@@ -636,13 +703,29 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
               <Button size="small" loading={searching} onClick={scanTabs}>
                 读取浏览器里的结果
               </Button>
+              <Tooltip title="把商品主图复制到剪贴板，然后到调试 Chrome 的 1688 图搜页按 Ctrl+V 粘贴">
+                <Button size="small" icon={<CopyOutlined />} loading={copying} onClick={copyProductImage}>
+                  复制图片
+                </Button>
+              </Tooltip>
             </Space>
             {product ? (
               <Card size="small" style={{ background: '#fafafa' }}>
-                <Space>
+                <Space align="start">
                   {product.imageUrl ? (
-                    <img src={product.imageUrl} alt="" style={{ width: 88, height: 88, objectFit: 'cover', borderRadius: 4 }} />
-                  ) : null}
+                    <Tooltip title="点击复制图片">
+                      <img
+                        src={proxyImage(product.imageUrl)}
+                        alt=""
+                        onClick={copyProductImage}
+                        style={{ width: 88, height: 88, objectFit: 'cover', borderRadius: 4, cursor: 'copy' }}
+                      />
+                    </Tooltip>
+                  ) : (
+                    <Button size="small" onClick={ensureImage}>
+                      抓商品主图
+                    </Button>
+                  )}
                   <div style={{ maxWidth: 460 }}>
                     <div style={{ fontWeight: 600, marginBottom: 4 }}>
                       {product.sku} · ¥{money((product.priceRub || 0) * (settings?.exchangeRate || 0.0862))} / ₽{money(product.priceRub, 0)}

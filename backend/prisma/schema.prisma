@@ -261,12 +261,20 @@ model PricingRecord {
   retailUrl String? @db.VarChar(1000) // 跟卖链接
   remark    String? @db.VarChar(500)
 
+  // ---- 原定价表（Excel）里的列，保证「定价记录」与原表逐列对齐 ----
+  mark       String? @db.VarChar(120) // 原表 A 列：序号/标记（如「可跨境铺货」「点评易损」）
+  weightText String? @db.VarChar(40) // 原表 O 列原文（如 300g / 10.5kg / 130g）
+  sizeText   String? @db.VarChar(80) // 原表 P 列原文（如 18.5cm * 7cm * 17cm / 40*30*11）
+  excelRef   String? @db.VarChar(160) // 来源定位「工作表!行号」，重复导入时幂等
+  source     String  @default("workbench") @db.VarChar(20) // workbench / excel
+
   userId    Int?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([createdAt])
   @@index([sku])
+  @@index([excelRef])
   @@map("pricing_records")
 }
 
