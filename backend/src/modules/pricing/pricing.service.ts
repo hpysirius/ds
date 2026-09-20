@@ -15,6 +15,7 @@ import {
   r4,
   rubToCny,
   solveSellPrice,
+  suggestSellPrice,
   vendorLabel,
 } from './pricing.calc';
 import {
@@ -22,6 +23,7 @@ import {
   CreateRecordDto,
   QueryRecordDto,
   QuoteDto,
+  PriceDto,
   UpdateChannelDto,
   UpdateRecordDto,
   UpdateSettingDto,
@@ -159,6 +161,7 @@ export class PricingService {
       commissionRate: num(row.commissionRate),
       agentRate: num(row.agentRate),
       withdrawRate: num(row.withdrawRate),
+      markupRate: num(row.markupRate),
       defaultCountry: row.defaultCountry,
       defaultVendor: row.defaultVendor,
     };
@@ -266,7 +269,9 @@ export class PricingService {
 
     const results = channels.map((c) => {
       const q = quoteChannel(input, c);
-      const shippingFee = dto.manualShippingFee != null ? dto.manualShippingFee : q.shippingFee;
+      // 定价表里的运费是两位小数（表内以 ROUNDUP 后的值参与利润计算），这里同样取两位
+      const shippingFee =
+        dto.manualShippingFee != null ? dto.manualShippingFee : r2(q.shippingFee);
       const p = calcPricing({ sellPriceCny, shippingFee, ...params });
       const suggested =
         q.ok || dto.manualShippingFee != null
@@ -333,7 +338,164 @@ export class PricingService {
     };
   }
 
-  // ==================== 核价记录 ====================
+  // ==================== 定价工作流 ====================
+  /**
+   * 按选定渠道 / 全部渠道定价：
+   *   1. 算运费（计费重量 → 渠道资费）
+   *   2. 建议定价 = ceil((成本×(1+加价率) + 运费 + 贴单费) / (1 − 平台佣金 − 代理佣金))
+   *   3. 用定价表公式算毛利 / 净利 / 利润率 / 运费利润比 / 加35%
+   */
+  async price(dto: PriceDto) {
+    const s = await this.getSettings();
+    const rate = dto.exchangeRate != null ? dto.exchangeRate : s.exchangeRate;
+    const params = {
+      purchaseCost: dto.purchaseCost ?? 0,
+      labelFee: dto.labelFee ?? s.labelFee,
+      commissionRate: dto.commissionRate ?? s.commissionRate,
+      agentRate: dto.agentRate ?? s.agentRate,
+      withdrawRate: dto.withdrawRate ?? s.withdrawRate,
+    };
+    const markup = dto.markupRate != null ? dto.markupRate : num(s.markupRate) || 0.1;
+
+    const valueRub =
+      dto.valueRub != null
+        ? dto.valueRub
+        : dto.sellPriceRub != null
+          ? dto.sellPriceRub
+          : dto.sellPriceCny != null
+            ? cnyToRub(dto.sellPriceCny, rate)
+            : 0;
+
+    const input = {
+      weightKg: dto.weightKg ?? 0,
+      lengthCm: dto.lengthCm ?? 0,
+      widthCm: dto.widthCm ?? 0,
+      heightCm: dto.heightCm ?? 0,
+      valueRub,
+    };
+
+    let channels = await this.listChannels({
+      country: dto.country,
+      vendor: dto.vendor,
+      category: dto.category,
+    });
+    if (dto.channelId) channels = channels.filter((c) => c.id === dto.channelId);
+
+    const results = channels.map((c) => {
+      const q = quoteChannel(input, c);
+      // 定价表里的运费是两位小数（表内以 ROUNDUP 后的值参与利润计算），这里同样取两位
+      const shippingFee =
+        dto.manualShippingFee != null ? dto.manualShippingFee : r2(q.shippingFee);
+      const suggested = suggestSellPrice({ ...params, shippingFee, markupRate: markup });
+      const sellPriceCny =
+        dto.manualSellPrice != null
+          ? dto.manualSellPrice
+          : dto.sellPriceCny != null && !dto.channelId
+            ? dto.sellPriceCny
+            : suggested;
+      const p = calcPricing({ sellPriceCny, shippingFee, ...params });
+      return {
+        channelId: c.id,
+        name: c.name,
+        country: c.country,
+        countryLabel: countryLabel(c.country),
+        vendor: c.vendor,
+        vendorLabel: vendorLabel(c.vendor),
+        category: c.category,
+        categoryLabel: CATEGORY_LABEL[c.category] || c.category,
+        shipMode: c.shipMode,
+        delivery: c.delivery,
+        etaDays: c.etaDays,
+        pricePerKg: c.pricePerKg,
+        pricePerOrder: c.pricePerOrder,
+        priceText: c.priceText,
+        note: c.note,
+        ok: q.ok,
+        reason: q.reason,
+        billWeightKg: q.billWeightKg,
+        volumetricWeightKg: q.volumetricWeightKg,
+        shippingFee: r2(shippingFee),
+        sellPrice: r2(sellPriceCny),
+        sellPriceRub: cnyToRub(sellPriceCny, rate),
+        markup35: p.markup35,
+        grossProfit: p.grossProfit,
+        netProfit: p.netProfit,
+        profitRate: p.profitRate,
+        freightProfitRatio: p.freightProfitRatio,
+        grossMargin: p.grossMargin,
+        netMargin: p.netMargin,
+        suggestedSellPrice: suggested,
+        suggestedSellPriceRub: cnyToRub(suggested, rate),
+      };
+    });
+
+    const ok = results.filter((r) => r.ok).sort((a, b) => a.shippingFee - b.shippingFee);
+    const fail = dto.includeUnavailable ? results.filter((r) => !r.ok) : [];
+    const list = [...ok, ...fail];
+    const pick = dto.channelId ? list[0] : ok[0] || fail[0] || null;
+
+    return {
+      input: {
+        ...input,
+        ...params,
+        markupRate: markup,
+        exchangeRate: rate,
+        weightG: r2((dto.weightKg ?? 0) * 1000),
+      },
+      best: pick,
+      selected: pick,
+      total: channels.length,
+      available: ok.length,
+      list,
+    };
+  }
+
+  /** 商品库检索：供定价工作台选品 */
+  async searchProducts(keyword: string, limit = 20) {
+    const kw = (keyword || '').trim();
+    const where: any = kw
+      ? {
+          OR: [
+            { sku: { contains: kw } },
+            { title: { contains: kw } },
+            { categoryPath: { contains: kw } },
+          ],
+        }
+      : {};
+    const rows = await this.prisma.product.findMany({
+      where,
+      orderBy: { lastSeenAt: 'desc' },
+      take: limit,
+    });
+    return rows.map((p) => ({
+      sku: p.sku,
+      title: p.title,
+      brand: p.brand,
+      categoryPath: p.categoryPath,
+      category3Name: p.category3Name,
+      priceRub: p.price != null ? num(p.price) : 0,
+      imageUrl: p.imageUrl,
+      productUrl: p.productUrl,
+      soldCount: p.soldCount,
+      convToCartPdp: p.convToCartPdp != null ? num(p.convToCartPdp) : null,
+      cancelRate: p.cancelRate != null ? num(p.cancelRate) : null,
+      reviewsCount: p.reviewsCount,
+      createDays: p.createDays,
+      salesSchema: p.salesSchema,
+      weightKg: p.sizeWeightG ? r4(p.sizeWeightG / 1000) : 0,
+      lengthCm: p.sizeLengthMm ? r2(p.sizeLengthMm / 10) : 0,
+      widthCm: p.sizeWidthMm ? r2(p.sizeWidthMm / 10) : 0,
+      heightCm: p.sizeHeightMm ? r2(p.sizeHeightMm / 10) : 0,
+    }));
+  }
+
+  /** 回写商品库主图（以图搜款抓到后保存，避免重复抓取） */
+  async setProductImage(sku: string, imageUrl: string) {
+    await this.prisma.product.updateMany({ where: { sku }, data: { imageUrl } });
+    return { sku, imageUrl };
+  }
+
+  // ==================== 定价记录 ====================
   async listRecords(query: QueryRecordDto = {}) {
     const page = query.page && query.page > 0 ? query.page : 1;
     const pageSize = query.pageSize && query.pageSize > 0 ? query.pageSize : 20;
@@ -380,6 +542,8 @@ export class PricingService {
       profitRate: num(r.profitRate),
       freightProfitRatio: num(r.freightProfitRatio),
       markup35: num(r.markup35),
+      markupRate: num(r.markupRate),
+      weightG: r2(num(r.weightKg) * 1000),
     };
   }
 
@@ -434,6 +598,11 @@ export class PricingService {
       supplyUrl: dto.supplyUrl ?? null,
       retailUrl: dto.retailUrl ?? null,
       remark: dto.remark ?? null,
+      markupRate: dto.markupRate ?? (num(s.markupRate) || 0.1),
+      imageUrl: dto.imageUrl ?? null,
+      categoryPath: dto.categoryPath ?? null,
+      offer1688Title: dto.offer1688Title ?? null,
+      weightSource: dto.weightSource ?? null,
       userId: userId ?? null,
     };
     const data = this.recompute(base);
@@ -487,6 +656,8 @@ export class PricingService {
       '产品备注',
       '跟卖链接',
       '货源链接',
+      '加价率',
+      '货源标题',
     ];
     const esc = (v: any) => {
       const s = v == null ? '' : String(v);
@@ -511,11 +682,13 @@ export class PricingService {
           num(r.profitRate).toFixed(4),
           num(r.freightProfitRatio).toFixed(4),
           r.logistics || r.shipMode || '',
-          `${num(r.weightKg)}kg`,
+          r.weightG ? `${r.weightG}g` : `${num(r.weightKg)}kg`,
           size,
           r.name || '',
           r.retailUrl || '',
           r.supplyUrl || '',
+          num(r.markupRate),
+          r.offer1688Title || '',
         ]
           .map(esc)
           .join(','),

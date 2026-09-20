@@ -229,6 +229,12 @@ model PricingRecord {
   sellPrice    Decimal @default(0) @db.Decimal(12, 2) // 定价（元）
   sellPriceRub Decimal @default(0) @db.Decimal(12, 2) // 定价（卢布）
   exchangeRate Decimal @default(0.0862) @db.Decimal(10, 6) // 卢布 → 人民币
+  markupRate   Decimal @default(0.1) @db.Decimal(6, 4) // 成本加价率（默认 10%）
+
+  imageUrl       String? @db.VarChar(1000) // 商品库主图
+  categoryPath   String? @db.VarChar(300) // 类目路径
+  offer1688Title String? @db.VarChar(500) // 1688 货品标题
+  weightSource   String? @db.VarChar(20) // 重量来源：1688包装信息 / 商品库 / 手填
 
   labelFee       Decimal @default(2) @db.Decimal(10, 2) // 贴单费
   commissionRate Decimal @default(0.12) @db.Decimal(6, 4) // 平台佣金
@@ -273,8 +279,14 @@ model PricingSetting {
   commissionRate Decimal  @default(0.12) @db.Decimal(6, 4)
   agentRate      Decimal  @default(0.035) @db.Decimal(6, 4)
   withdrawRate   Decimal  @default(0.012) @db.Decimal(6, 4)
+  markupRate     Decimal  @default(0.1) @db.Decimal(6, 4) // 成本加价率
   defaultCountry String   @default("RU") @db.VarChar(20)
   defaultVendor  String   @default("GUOO") @db.VarChar(20)
+
+  // ---- 1688 登录态：从「浏览器接管」的调试 Chrome 同步一次，之后 1688 全部走纯 HTTP ----
+  ali1688Cookie   String?   @db.Text
+  ali1688CookieAt DateTime?
+
   updatedAt      DateTime @updatedAt
 
   @@map("pricing_settings")

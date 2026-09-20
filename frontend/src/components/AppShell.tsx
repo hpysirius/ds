@@ -20,7 +20,7 @@ const MENUS = [
   { key: '/collect', icon: <CloudDownloadOutlined />, label: '数据采集' },
   { key: '/products', icon: <AppstoreOutlined />, label: '商品库' },
   { key: '/screening', icon: <FilterOutlined />, label: '智能筛选' },
-  { key: '/pricing', icon: <CalculatorOutlined />, label: '核价计算' },
+  { key: '/pricing', icon: <CalculatorOutlined />, label: '定价' },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {

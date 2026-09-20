@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Button, Card, Col, Empty, Form, Input, InputNumber, Row, Select, Space, Table, Tag, message } from 'antd';
-import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Card, Col, Empty, Form, Input, InputNumber, Row, Select, Space, Table, Tag, Tooltip, message } from 'antd';
+import { CalculatorOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { useRouter } from 'next/navigation';
 import { http } from '@/lib/api';
 
 export default function ProductsPage() {
+  const router = useRouter();
   const [list, setList] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -144,6 +146,7 @@ export default function ProductsPage() {
           size="small"
           loading={loading}
           dataSource={list}
+          scroll={{ x: 1700 }}
           locale={{ emptyText: <Empty description="还没有商品，先去「数据采集」跑一轮" /> }}
           pagination={{
             current: page,
@@ -200,6 +203,22 @@ export default function ProductsPage() {
               dataIndex: 'firstSeenAt',
               width: 160,
               render: (v) => new Date(v).toLocaleString('zh-CN'),
+            },
+            {
+              title: '操作',
+              key: 'op',
+              width: 150,
+              fixed: 'right',
+              render: (_: any, r: any) => (
+                <Space size={4}>
+                  <Button type="link" size="small" onClick={() => router.push(`/pricing?sku=${r.sku}`)}>
+                    核价
+                  </Button>
+                  <Button type="link" size="small" onClick={() => router.push(`/pricing?sku=${r.sku}&auto=1`)}>
+                    自动核价
+                  </Button>
+                </Space>
+              ),
             },
           ]}
         />

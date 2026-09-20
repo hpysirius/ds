@@ -32,7 +32,7 @@ ds/
 │           ├── collect/             # 采集任务：滚动加载 → 读插件数据 → 入库
 │           ├── products/            # 商品库查询与指标历史
 │           ├── screening/           # 规则预设、打分分级、结果导出
-│           ├── pricing/             # 核价：物流渠道库 + 运费试算 + 利润核算
+│           ├── pricing/             # 定价：找货源(1688) + 物流渠道库 + 定价计算 + 定价记录
 │           │   ├── pricing.calc.ts  # 纯函数计算引擎（运费 / 利润 / 反算定价）
 │           │   └── channels.data.ts # 内置渠道种子（来自《定价表模版》）
 │           └── stats/               # 首页概览
@@ -163,12 +163,31 @@ Ozon 前台不公开月销、加购率、退货率、上架天数、广告占比
 | 采集 | `POST /collect/tasks`、`GET /collect/tasks`、`GET /collect/tasks/:id`、`DELETE /collect/tasks/:id` |
 | 商品库 | `GET /products`、`GET /products/categories`、`GET /products/:sku`、`GET /products/:sku/history` |
 | 筛选 | `GET/POST/PATCH/DELETE /screening/presets`、`POST /screening/run`、`GET /screening/runs`、`GET /screening/runs/:id`、`GET /screening/runs/:id/export` |
-| 核价 | `GET /pricing/meta`、`GET/PATCH /pricing/settings`、`GET/POST/PATCH/DELETE /pricing/channels`、`POST /pricing/channels/reset`、`POST /pricing/quote`、`POST /pricing/calc`、`GET /pricing/from-product/:sku`、`GET/POST/PATCH/DELETE /pricing/records`、`GET /pricing/records/export` |
+| 定价 | `GET /pricing/meta`、`GET/PATCH /pricing/settings`、`GET /pricing/products`、`GET/POST/PATCH/DELETE /pricing/channels`、`POST /pricing/channels/reset`、`POST /pricing/price`、`POST /pricing/quote`、`POST /pricing/calc`、`GET /pricing/sourcing/cookie-status`、`POST /pricing/sourcing/sync-cookie`、`POST /pricing/sourcing/search-keyword`、`POST /pricing/sourcing/prepare-search`、`POST /pricing/sourcing/trigger-search`、`POST /pricing/sourcing/scan-tabs`、`POST /pricing/sourcing/image-search`、`POST /pricing/sourcing/product-image`、`POST /pricing/sourcing/offer`、`GET /pricing/from-product/:sku`、`GET/POST/PATCH/DELETE /pricing/records`、`GET /pricing/records/export` |
 | 概览 | `GET /stats/overview` |
 
-## 核价
+## 定价（选品 → 找货源 → 算定价）
 
-选完品之后要判断这个品能不能做，页面的入口在侧边栏「核价计算」。公式照搬原来的《定价表模版.xlsx》：
+入口在侧边栏「定价」→「定价工作台」，走的是一条完整链路：
+
+1. **选品**：从商品库搜 SKU / 标题，带出主图、卢布售价、类目、月销、退货率、三边尺寸与重量
+2. **找货源（纯 HTTP，秒级）**：关键词搜同款 —— 关键词默认取商品库里的中文末级类目（如「儿童泡泡机」），搜 1688 移动端 SSR 页面，一次返回 20 条货源（图/标题/价格/成交/城市）；你对某条点「选这个」后，系统用纯 HTTP 抓该货品的**采购价**与**包装信息（长宽高/重量）**回填（约 0.7 秒）。这两项来自货品页内联 JSON（`priceDisplay` / `pieceWeightScaleInfo`），不爬 DOM、不用浏览器。
+   - 登录态：1688 搜索需要 cookie，点「同步 1688 登录态」从调试 Chrome 里读一次存库即可（只读 cookie，不渲染页面），之后**全程不需要浏览器**
+   - **三条找货源路径**（按推荐度）：
+  1. **关键词搜同款**（纯 HTTP，0.5 秒出 20 条）—— 关键词用商品的中文末级类目，命中率最高
+  2. **以图搜款（更准）**：系统在调试 Chrome 里打开 1688 图搜页、自动把商品主图放进上传框、自动点「搜索图片」，你只要回系统点「读取浏览器里的结果」，系统会把浏览器里的 1688 货源接回来（标题/价格/包装仍是 HTTP 秒抓）
+  3. **直接粘贴 1688 链接** → 抓取（最稳，永远可用。Ozon 主图因服务端被 307 拦截，只能由浏览器抓一次）
+- **1688 登录态**：搜索接口需要 cookie。两种方式任选：
+  - 点「同步 1688 登录态」→ 系统从调试 Chrome 里读一次（只读 cookie、不渲染页面，0.15 秒）
+  - 或点「粘贴 Cookie」手动粘贴：登录 1688 → F12 → Network → 刷新页面 → 点第一条 www.1688.com 请求 →
+    Request Headers 里的 **Cookie** → 复制值 → 粘进来
+- **风控提醒**：1688 搜索接口对同 IP 高频请求会返回滑块惩罚页（`_____tmd_____/punish`）。
+  代码里加了 1.5 秒最小间隔、同关键词 5 分钟缓存、命中后 3 分钟冷却；**但货品详情抓取不受风控影响**，
+  所以就算搜索被拦，粘贴链接后照样能秒抓价格与包装信息
+3. **算定价**：按渠道算运费 → 用加价规则反推定价 → 算毛利/净利/利润率/运费利润比/加35%
+4. **保存**：一条记录含 Ozon 链接、1688 链接、成本、重量尺寸、渠道、定价与全部利润指标，可导出 CSV（列头与《9月定价表》一致）
+
+公式照搬《9月定价表.xlsx》：
 
 ```
 计费重量 = 计抛渠道 ? max(实重, 长×宽×高 / 12000) : 实重
@@ -180,13 +199,14 @@ Ozon 前台不公开月销、加购率、退货率、上架天数、广告占比
 加 35%   = 定价 / 0.65
 ```
 
-页面一次算出当前国家下**所有可用渠道**的运费并排在一起对比，按净利润从高到低排；
-点某一行就把它的运费填进结果卡。填了「目标利润率」还会反算建议定价：
+定价规则（已用表内真实行校验：成本21.8、运费13.21、贴单2、加价10%、佣金12%、代理3.5% → 定价47）：
 
 ```
-定价 = [目标净利润 + 采购成本×提现费率 + (采购成本+运费+贴单费)(1−提现费率)]
-       / [(1−平台佣金−代理佣金)(1−提现费率)]
+建议定价 = ceil( (采购成本×(1+加价率) + 国际运费 + 贴单费) / (1 − 平台佣金 − 代理佣金) )
 ```
+
+渠道对比表列出该国所有渠道的运费与对应定价，点行即切换；定价可手动改，利润指标实时重算。
+（旧的反算定价接口 POST /pricing/calc 仍保留，可按目标利润率反推。）
 
 **内置渠道**（111 条，来自模版，可在「物流渠道」页改）：
 
@@ -200,9 +220,11 @@ Ozon 前台不公开月销、加购率、退货率、上架天数、广告占比
 渠道按品类（Extra Small / Budget / Small / Big / Premium Small / Premium Big）校验
 重量区间、货值区间（₽）、三边之和、单边长度，不合规的渠道会直接给出原因。
 
-- 「核价记录」保存每次算完的结果，导出 CSV 的列头与原定价表完全一致
-- 「参数设置」里的汇率、贴单费、佣金、代理佣金、提现费率是核价页的默认值
-- 核价页可以填商品库里的 SKU，一键带出重量、三边尺寸和卢布售价
+- 「定价记录」保存每次结果，导出 CSV 的列头与《9月定价表》一致（含加价率、货源标题）
+- 「参数设置」里可改汇率、贴单费、佣金、代理佣金、提现费率与**成本加价率**（默认 10%）
+- 以图搜款依赖「浏览器接管」启动的调试 Chrome，且需要在这个 Chrome 里登录 1688；没登录或出现验证时接口会明确提示
+- 1688 抓取**默认走纯 HTTP**：货品详情页是 SSR、匿名可抓（0.6s），关键词搜索走 m.1688.com 的 SSR 页（需登录态 cookie，0.5s）
+- 「以图搜款」是遗留的浏览器链路（1688 图搜页加载 10 秒后渲染进程会忙到不回应 CDP，很慢），仅在 HTTP 搜索不可用时用；CDP 命令一律带超时+重试，页面一能求值就抢着做
 
 ## 数据模型
 

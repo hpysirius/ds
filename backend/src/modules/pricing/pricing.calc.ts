@@ -9,10 +9,10 @@
  *   加 35%   = 定价 / 0.65
  */
 
-export const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
-export const r4 = (n: number) => Math.round((n + Number.EPSILON) * 10000) / 10000;
+export const r2 = (n: number) => Math.round((n + 1e-9) * 100) / 100;
+export const r4 = (n: number) => Math.round((n + 1e-9) * 10000) / 10000;
 /** 向上取整到 2 位（对应 Excel 的 ROUNDUP(x,2)） */
-export const roundUp2 = (n: number) => Math.ceil(n * 100 - Number.EPSILON) / 100;
+export const roundUp2 = (n: number) => Math.ceil(n * 100 - 1e-9) / 100;
 
 export const COUNTRIES = [
   { value: 'RU', label: '俄罗斯' },
@@ -211,6 +211,27 @@ export function solveSellPrice(params: {
   if (denom <= 0) return 0;
   const c = (target + D * i + (D + E + F) * (1 - i)) / denom;
   return r2(Math.max(0, c));
+}
+
+/**
+ * 建议定价（9月定价表规则，已用真实行校验）：
+ *   定价 = ceil( (采购成本×(1+加价率) + 国际运费 + 贴单费) / (1 − 平台佣金 − 代理佣金) )
+ *
+ * 校验：成本21.8、运费13.21、贴单2、加价10%、佣金12%、代理3.5%
+ *   → (21.8×1.1 + 13.21 + 2) / 0.845 = 46.38 → ceil = 47 ✓（与表内行一致）
+ */
+export function suggestSellPrice(params: {
+  purchaseCost: number;
+  shippingFee: number;
+  labelFee: number;
+  commissionRate: number;
+  agentRate: number;
+  markupRate: number;
+}): number {
+  const { purchaseCost: D, shippingFee: E, labelFee: F, commissionRate: g, agentRate: h, markupRate: m } = params;
+  const denom = 1 - g - h;
+  if (denom <= 0) return 0;
+  return Math.ceil(Math.max(0, (D * (1 + m) + E + F) / denom - Number.EPSILON));
 }
 
 /** 卢布 → 人民币 */

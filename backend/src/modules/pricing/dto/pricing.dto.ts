@@ -169,6 +169,13 @@ export class CreateRecordDto {
   @ApiPropertyOptional() @IsOptional() @IsString() supplyUrl?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() retailUrl?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() remark?: string;
+
+  @ApiPropertyOptional({ description: '成本加价率，0.1 = 成本加 10%' })
+  @IsOptional() @Type(() => Number) @IsNumber() markupRate?: number;
+  @ApiPropertyOptional() @IsOptional() @IsString() imageUrl?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() categoryPath?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() offer1688Title?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() weightSource?: string;
 }
 
 export class UpdateRecordDto extends CreateRecordDto {}
@@ -187,8 +194,91 @@ export class UpdateSettingDto {
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsNumber() commissionRate?: number;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsNumber() agentRate?: number;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsNumber() withdrawRate?: number;
+  @ApiPropertyOptional({ description: '成本加价率，0.1 = 成本加 10%' })
+  @IsOptional() @Type(() => Number) @IsNumber() markupRate?: number;
   @ApiPropertyOptional() @IsOptional() @IsString() defaultCountry?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() defaultVendor?: string;
+}
+
+/** 定价工作流：按渠道算运费 → 按「成本×(1+加价率)」规则反推建议定价 → 算利润 */
+export class PriceDto extends CalcDto {
+  @ApiPropertyOptional({ description: '成本加价率，0.1 = 成本加 10%（不传取参数默认 10%）' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  markupRate?: number;
+
+  @ApiPropertyOptional({ description: '手工指定定价（元）；不传则用建议定价' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  manualSellPrice?: number;
+
+  @ApiPropertyOptional({ description: '商品库 SKU，用于回填商品信息' })
+  @IsOptional()
+  @IsString()
+  sku?: string;
+
+  @ApiPropertyOptional({ description: '1688 货源链接' })
+  @IsOptional()
+  @IsString()
+  supplyUrl?: string;
+
+  @ApiPropertyOptional({ description: 'Ozon 跟卖链接' })
+  @IsOptional()
+  @IsString()
+  retailUrl?: string;
+}
+
+/** 1688 以图搜款：传商品主图 */
+export class ImageSearchDto {
+  @ApiProperty({ description: '商品主图 URL（Ozon CDN）' })
+  @IsString()
+  @IsNotEmpty()
+  imageUrl: string;
+}
+
+export class ProductImageDto {
+  @ApiPropertyOptional({ description: 'Ozon 商品链接' })
+  @IsOptional()
+  @IsString()
+  url?: string;
+
+  @ApiPropertyOptional({ description: '商品库 SKU，抓到后回写商品库' })
+  @IsOptional()
+  @IsString()
+  sku?: string;
+}
+
+/** 1688 关键词搜同款 */
+export class KeywordSearchDto {
+  @ApiProperty({ description: '搜索关键词，一般用商品的中文类目名' })
+  @IsString()
+  @IsNotEmpty()
+  keyword: string;
+}
+
+/** 手动粘贴 1688 Cookie */
+export class SaveCookieDto {
+  @ApiProperty({ description: '从 DevTools 复制的 Cookie 请求头' })
+  @IsString()
+  @IsNotEmpty()
+  cookie: string;
+}
+
+/** 抓 1688 货品详情（价格 + 包装信息） */
+export class OfferFetchDto {
+  @ApiProperty({ description: '1688 商品链接或 offerId' })
+  @IsString()
+  @IsNotEmpty()
+  url: string;
+
+  @ApiPropertyOptional({ description: 'HTTP 抓不到时是否退到浏览器兜底' })
+  @IsOptional()
+  @IsBoolean()
+  allowBrowser?: boolean;
 }
 
 /** 渠道增量更新：字段全部可选 */
