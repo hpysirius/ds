@@ -38,6 +38,11 @@ export class BrowserService {
     return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   }
 
+  /** 浏览器接管依赖本机 macOS Chrome（GUI + 登录态），仅 macOS 可用 */
+  private get isSupported(): boolean {
+    return process.platform === 'darwin';
+  }
+
   private get realProfile(): string {
     return path.join(os.homedir(), 'Library/Application Support/Google/Chrome');
   }
@@ -105,6 +110,20 @@ export class BrowserService {
   }
 
   async status() {
+    if (!this.isSupported) {
+      return {
+        supported: false,
+        portUp: false,
+        port: this.port,
+        chromeRunning: false,
+        profileReady: false,
+        profileDir: this.profileDir,
+        browser: null,
+        msg:
+          '浏览器接管功能仅支持 macOS 桌面环境（需在本机已登录「中实跨境ERP」插件的 Chrome 上运行），' +
+          '当前运行环境为服务器，无法使用。请在你的 Mac 上运行本服务后再使用此功能。',
+      };
+    }
     const portUp = await this.portUp();
     const running = this.chromeRunning();
     let version: any = null;
@@ -132,6 +151,16 @@ export class BrowserService {
       this.logger.log(m);
       logs.push(m);
     };
+
+    if (!this.isSupported) {
+      return {
+        ok: false,
+        msg:
+          '浏览器接管功能仅支持 macOS 桌面环境：需在安装了 Google Chrome、且已登录「中实跨境ERP」插件的本机运行。' +
+          '当前为服务器环境（无 GUI / Chrome），无法启动此功能。请在你的 Mac 上运行本服务后再使用。',
+        logs: ['当前操作系统：' + (process.platform || 'unknown')],
+      };
+    }
 
     if (await this.portUp()) return { ok: true, msg: '调试端口已就绪', logs };
 

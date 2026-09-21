@@ -135,6 +135,19 @@ export default function CollectPage() {
         数据来自「中实跨境ERP」插件注入在商品卡片上的属性，因此需要接管你本机装了插件、登了号的 Chrome
       </p>
 
+      {browser?.supported === false && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 14 }}
+          message="浏览器接管功能当前不可用"
+          description={
+            browser?.msg ||
+            '此功能仅支持 macOS 桌面环境（需本机已登录插件的 Chrome），当前运行环境为服务器，无法启动。请在你的 Mac 上运行本服务后再使用。'
+          }
+        />
+      )}
+
       <Card size="small" style={{ marginBottom: 14 }}>
         <Row align="middle" gutter={12}>
           <Col flex="auto">
