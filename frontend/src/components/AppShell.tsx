@@ -114,12 +114,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <Modal title="登录" open={open} onOk={login} onCancel={() => setOpen(false)} confirmLoading={loading} okText="登录">
         <Form form={form} layout="vertical" initialValues={{ username: 'admin', password: 'admin123' }}>
           <Form.Item name="username" label="登录名" rules={[{ required: true, message: '请输入登录名' }]}>
-            <Input placeholder="admin" />
+            <Input placeholder="请输入" />
           </Form.Item>
           <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password placeholder="admin123" />
+            <Input.Password placeholder="请输入" />
           </Form.Item>
-          <div style={{ color: '#8c8c8c', fontSize: 12 }}>默认账号 admin / admin123（采集与规则编辑需要登录）</div>
         </Form>
       </Modal>
     </Layout>
