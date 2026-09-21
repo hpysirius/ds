@@ -12,6 +12,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/_ds_proc.sh"
 STOP_CHROME=0
 
 usage() {
@@ -38,20 +39,9 @@ done
 
 echo "停止本项目的服务…（${ROOT}）"
 
-# ---------- 工具函数：判断某个 PID 是否属于本项目 ----------
+# ---------- 工具函数：判断某个 PID 是否属于本项目（兼容迁移/Trash） ----------
 is_project_proc() {
-  pid="$1"
-  # ① 命令行里带项目路径
-  cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  case "$cmd" in
-    *"$ROOT"*) return 0 ;;
-  esac
-  # ② 工作目录在项目里（npm run start 这类子进程 argv 里往往没有路径）
-  cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1 || true)"
-  case "$cwd" in
-    "$ROOT"*|*"$ROOT"*) return 0 ;;
-  esac
-  return 1
+  is_ds_proc "$1"
 }
 
 # ---------- ① 释放端口（free-ports 内部已判断归属） ----------

@@ -20,6 +20,95 @@ import {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 详情页探测：**只抓 Ozon 公开页面自己的数据，不依赖任何浏览器插件**。
+ * ① JSON-LD（Ozon 商品页自带的 Product 结构化数据，SSR 直接带在 HTML 里，最可靠）
+ * ② og / meta 标签兜底
+ * ③ 公开 DOM 兜底（h1、品牌链接、面包屑、评论数文案、FBS/FBO、卖家）
+ *
+ * 与旧版相比：不再遍历全部元素的 data-s2* 属性（插件注入），也不再死等插件注入，
+ * 页面一加载完读一次即可，快一个数量级。最后压成单行再交给 CDP，避免多行表达式出问题。
+ */
+const PUBLIC_PROBE_JS = `(function(){
+  var out={};
+  function txt(s){return String(s==null?'':s).replace(/\\s+/g,' ').trim();}
+  function num(v){if(v==null)return null;var n=parseFloat(String(v).replace(/[^0-9.\\-]/g,''));return isNaN(n)?null:n;}
+  function meta(sel){var m=document.querySelector(sel);return m?txt(m.getAttribute('content')):'';}
+  try{
+    var lds=document.querySelectorAll('script[type="application/ld+json"]');
+    for(var i=0;i<lds.length;i++){
+      var j=null;try{j=JSON.parse(lds[i].textContent||'');}catch(e){continue;}
+      var arr=Array.isArray(j)?j:[j];
+      for(var k=0;k<arr.length;k++){
+        var o=arr[k];if(!o||o['@type']!=='Product')continue;
+        if(o.name)out.title=txt(o.name);
+        if(o.brand)out.brand=txt(typeof o.brand==='string'?o.brand:o.brand.name);
+        if(o.image)out.imageUrl=Array.isArray(o.image)?String(o.image[0]):String(o.image);
+        var of=o.offers?(Array.isArray(o.offers)?o.offers[0]:o.offers):null;
+        if(of&&of.price)out.price=num(of.price);
+        var ar=o.aggregateRating;
+        if(ar){
+          if(ar.ratingValue)out.rating=num(ar.ratingValue);
+          if(ar.reviewCount)out.reviewsCount=num(ar.reviewCount);
+          else if(ar.ratingCount)out.reviewsCount=num(ar.ratingCount);
+        }
+      }
+    }
+  }catch(e){}
+  if(!out.title)out.title=txt(meta('meta[property="og:title"]')||document.title||'');
+  if(!out.imageUrl)out.imageUrl=txt(meta('meta[property="og:image"]'));
+  if(out.price==null){var pm=txt(meta('meta[property="product:price:amount"]'));if(pm)out.price=num(pm);}
+  if(out.price==null){try{var pm2=String(document.body.innerText||'').match(/(\\d[\\d\\s\\u00a0]*)[\\s\\u00a0]*₽/);if(pm2)out.price=num(pm2[1]);}catch(e){}}
+  try{var h1=document.querySelector('h1');if(h1){var ht=txt(h1.innerText||h1.textContent);var cur=out.title||'';if(ht&&ht.length>cur.length)out.title=ht;}}catch(e){}
+  try{var b=document.querySelector('a[href*="/brand/"]');if(b){var bt=txt(b.innerText||b.textContent);if(bt&&bt.length<60&&!out.brand)out.brand=bt;}}catch(e){}
+  try{var cr=document.querySelectorAll('[data-widget*="bread"] a,[data-widget*="Bread"] a,[class*="breadcrumb"] a,[class*="Breadcrumb"] a,[class*="bread"] a');var ps=[];for(var c=0;c<cr.length;c++){var t=txt(cr[c].innerText||cr[c].textContent);if(t&&t.length<40&&ps.indexOf(t)<0)ps.push(t);}if(ps.length)out.categoryPath=ps.join(' / ');}catch(e){}
+  try{var bt2=String(document.body.innerText||'');if(/Нет отзывов/i.test(bt2)){out.reviewsCount=0;}else if(out.reviewsCount==null){var m=bt2.match(/(\\d[\\d\\s\\u00a0]*)[\\s\\u00a0]*(отзыв|отзыва|отзывов)/i);if(m)out.reviewsCount=num(m[1].replace(/[\\s\\u00a0]/g,''));}}catch(e){}
+  try{var st=String(document.body.innerText||'').match(/\\b(FBS|FBO|rFBS)\\b/);if(st)out.salesSchema=st[1];}catch(e){}
+  try{var sl=document.querySelector('a[href*="/seller/"]');if(sl){var sn=txt(sl.innerText||sl.textContent);if(sn&&sn.length<80)out.sellerName=sn;}}catch(e){}
+  out.url=location.href;
+  return JSON.stringify(out);
+})()`.replace(/\s*\n\s*/g, ' ');
+
+/**
+ * 等页面主体渲染完再抓。踩过的坑：Ozon 是 React 应用，类目面包屑是 JS 延迟渲染的 ——
+ * 实测刚跳转过去时 body 还是空的（0ms 时 bodyLen=0、面包屑为空），3~5 秒后才出现。
+ * 只等 URL 跳转就开抓，就只能拿到服务端渲染的 meta 标签（title/主图/价格），
+ * 类目、评论这些永远读不到。这里以「面包屑锚点出现」作为主体就绪信号。
+ * 有 8 秒上限，等不到也照旧往下走，不会像旧版那样无条件死等 60 秒。
+ */
+const WAIT_READY_JS = `(function(){
+  try{
+    if(document.querySelector('[data-widget*="bread"] a')) return true;
+    if(document.querySelector('[data-widget*="Bread"] a')) return true;
+    if(document.querySelector('[class*="breadcrumb"] a')) return true;
+    return false;
+  }catch(e){ return false; }
+})()`.replace(/\s*\n\s*/g, ' ');
+
+
+/** 读 og:image（兜底主图） */
+const OG_IMAGE_JS = "(function(){var m=document.querySelector('meta[property=\"og:image\"]');var f=m&&m.getAttribute('content');if(f&&/^https?:/i.test(f))return f;var is=[].slice.call(document.querySelectorAll('img')).map(function(i){return i.getAttribute('src')||''}).filter(function(s){return /^https?:\\/\\//i.test(s)&&/ozonstatic|ozone.ru|ozon.ru/.test(s)});if(!is.length)return 'null';return is[0]})()";
+
+const toNum = (v: any): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseFloat(String(v).replace(/[%\s,]/g, ''));
+  return Number.isNaN(n) ? null : n;
+};
+
+const toStr = (v: any): string | null => {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s === '' ? null : s.slice(0, 480);
+};
+
+/** 只认真正的商品图（与 collect.service 一致） */
+const isRealImg = (u: any): boolean => {
+  const v = String(u || '');
+  if (!/^https?:\/\//i.test(v)) return false;
+  if (/chrome-extension:|^data:|^blob:/i.test(v)) return false;
+  return /(ozonstatic|ozone\.ru|ozon\.ru|alicdn|1688\.com)/i.test(v);
+};
+
 /** 1688 搜索用的分类路径片段（实测这个 slug 与关键词无关，仅作入口） */
 const SEARCH_PATH = '-6BE2.html';
 
@@ -461,8 +550,14 @@ export class SourcingService {
       }
 
       // 登录 / 风控检测
+      /*
+       * 只试 1 次：这个检测是给 1688 用的（Ozon 页面永远为 false），
+       * 但它在重页面上可能超时，默认重试 3 次 × 12 秒 = 最坏白白卡 36 秒。
+       * 超时就当没登录要求，直接往下走，不影响结果。
+       */
       const login = await ev(
         `/login\\.taobao|login\\.1688|扫码登录|请登录|会员登录/.test(location.href + document.body.innerText.slice(0,3000))`,
+        1,
       );
       if (login === true) {
         throw new BadRequestException('1688 要求登录：请在弹出的调试 Chrome 窗口里登录 1688 后重试。');
@@ -885,6 +980,161 @@ export class SourcingService {
       },
       3000,
     );
+  }
+
+  /**
+   * 补单个商品的缺失信息：打开 Ozon 商品详情页，**只抓 Ozon 公开页面自己的数据**
+   * （JSON-LD / og:meta / 公开 DOM），映射到 Product 字段并 upsert（只更新非空字段）。
+   *
+   * 注意：月销 / 加购率 / 退货率 / 广告占比 / 上架天 这类指标只有 ERP 插件才提供，
+   * Ozon 公开页面上没有；插件移除后这些字段不再写入（保持原值或空）。
+   */
+  async enrichProductInfo(sku: string): Promise<{ sku: string; ok: boolean; fields: string[]; reason?: string }> {
+    const product = await this.prisma.product.findUnique({ where: { sku } });
+    if (!product) return { sku, ok: false, fields: [], reason: '商品不存在' };
+    const url = product.productUrl || `https://www.ozon.ru/product/${sku}/`;
+    let best: any = null;
+    try {
+      best = await this.withPage(
+        url,
+        async (_cdp, _sessionId, ev) => {
+          /*
+           * 新建标签页初始停在 about:blank，此时 readyState 已是 complete，
+           * 不加判断直接抓会对着空白页抓一通（踩过）。先等 URL 真的跳到商品页。
+           */
+          await this.waitFor(ev, `location.href.indexOf('/product/') >= 0`, 15000, 400);
+
+          /*
+           * 再等页面主体渲染完：类目面包屑是 JS 延迟渲染的，刚跳转时还没有，
+           * 不等的话只能抓到服务端渲染的 meta（title/主图/价格），类目和评论永远读不到。
+           * 上限 8 秒，等不到也继续（不会像旧版那样死等 60 秒）。
+           */
+          await this.waitFor(ev, WAIT_READY_JS, 8000, 500);
+
+          /*
+           * 公开数据是 SSR 直接带在 HTML 里的，不需要等插件注入：读一次就走。
+           * 只有当还没拿到任何有用字段时才快速重试几次（间隔很短），
+           * 旧版在这里死等插件 60 秒 —— 插件卸载后那就是纯浪费，是「补信息很慢」的主因。
+           */
+          let last: any = null;
+          for (let i = 0; i < 3; i++) {
+            const probe = await ev(PUBLIC_PROBE_JS, 2);
+            let parsed: any = null;
+            if (typeof probe === 'string') {
+              try { parsed = JSON.parse(probe); } catch (e) { /* ignore */ }
+            }
+            if (parsed) last = parsed;
+            if (parsed && (parsed.title || parsed.brand || parsed.imageUrl || parsed.price || parsed.reviewsCount)) break;
+            await sleep(700);
+          }
+          // 主图兜底：og:image 没拿到时再从页面图片里找一张
+          if (last && !last.imageUrl) {
+            const og = await ev(OG_IMAGE_JS, 2);
+            if (og && og !== 'null' && og !== '__TIMEOUT__') last.imageUrl = String(og);
+          }
+          return last;
+        },
+        3000,
+      );
+    } catch (e: any) {
+      return { sku, ok: false, fields: [], reason: String(e.message || e).slice(0, 160) };
+    }
+    if (!best) return { sku, ok: false, fields: [], reason: '未读到详情页数据' };
+
+    const data: any = {};
+    const set = (k: string, v: any) => { if (v !== null && v !== undefined && v !== '') data[k] = v; };
+    set('title', toStr(best.title));
+    set('brand', toStr(best.brand));
+    set('categoryPath', toStr(best.categoryPath));
+    set('price', toNum(best.price));
+    set('sellerName', toStr(best.sellerName));
+    const img = isRealImg(best.imageUrl) ? toStr(best.imageUrl) : null;
+    if (img) data.imageUrl = img;
+    set('rating', toNum(best.rating));
+    set('reviewsCount', toNum(best.reviewsCount));
+    set('salesSchema', toStr(best.salesSchema));
+    data.raw = best;
+    data.lastSeenAt = new Date();
+
+    if (Object.keys(data).length <= 2) {
+      return { sku, ok: false, fields: [], reason: 'Ozon 详情页未提供任何可补充的字段' };
+    }
+    await this.prisma.product.update({ where: { sku }, data });
+    // 只有真读到评分/评论才落一条指标，避免每次都插一条空记录
+    if (data.rating != null || data.reviewsCount != null) {
+      await this.prisma.productMetric.create({
+        data: {
+          productId: product.id,
+          taskId: null,
+          rating: data.rating ?? null,
+          reviewsCount: data.reviewsCount ?? null,
+        },
+      });
+    }
+    const fields = Object.keys(data).filter((k) => k !== 'raw' && k !== 'lastSeenAt');
+    return { sku, ok: true, fields };
+  }
+
+  /**
+   * 批量补商品信息：挑出还缺关键字段的商品，逐条打开详情页补齐。
+   * 与补图一样限流分批 + 关掉多余商品标签，避免渲染进程被打满。
+   *
+   * 注意：这里只挑「公开页面能补的字段」（品牌/类目/主图/评分/评论/价格），
+   * 不再把 soldCount（月销）算进去 —— 它是插件专属数据，公开页面补不了，
+   * 否则每次都会把同一批商品重新挑出来、永远补不完。
+   */
+  async enrichMissingProducts(limit = 5): Promise<{ enriched: string[]; failed: string[]; failedDetail: Array<{ sku: string; reason: string }>; remaining: number }> {
+    /*
+     * 只按「公开页面稳定能补到」的字段挑商品：类目、主图、价格、评论数。
+     * brand / rating 不参与筛选 —— 很多白牌商品 Ozon 上本来就没有品牌、也没有评分
+     * （实测这类商品 JSON-LD 里 brand 是空串、正文写着「Нет отзывов」），
+     * 若拿它们做筛选，这批商品会被反复挑中、永远补不完。它们只做「顺带补」：有就写，没有就跳过。
+     */
+    const missingWhere = {
+      OR: [
+        { categoryPath: null },
+        { imageUrl: null },
+        { price: null },
+        { reviewsCount: null },
+      ],
+    };
+    const rows = await this.prisma.product.findMany({
+      where: missingWhere,
+      orderBy: { id: 'desc' },
+      take: Math.max(0, Math.min(limit, 20)),
+      select: { id: true, sku: true, productUrl: true },
+    });
+    try {
+      const ver0 = await this.browser.version();
+      const cdp0 = new CdpClient(new URL(ver0.webSocketDebuggerUrl));
+      await cdp0.connect();
+      const tg0 = await cdp0.send('Target.getTargets', {}, undefined, 8000);
+      let kept = 0;
+      for (const t of tg0.result?.targetInfos || []) {
+        if (t.type !== 'page' || !/ozon\.ru\/product\//.test(t.url || '')) continue;
+        if (kept++ === 0) continue;
+        await cdp0.send('Target.closeTarget', { targetId: t.targetId }, undefined, 5000).catch(() => undefined);
+      }
+      cdp0.close();
+    } catch (e) {
+      /* ignore */
+    }
+    const enriched: string[] = [];
+    const failed: string[] = [];
+    const failedDetail: Array<{ sku: string; reason: string }> = [];
+    if (rows.length) await this.ensureBrowser();
+    for (let i = 0; i < rows.length; i++) {
+      const p = rows[i];
+      if (i > 0) await sleep(1200);
+      const r = await this.enrichProductInfo(p.sku);
+      if (r.ok) enriched.push(p.sku);
+      else {
+        failed.push(p.sku);
+        if (failedDetail.length < 3) failedDetail.push({ sku: p.sku, reason: r.reason || '未补充' });
+      }
+    }
+    const remaining = await this.prisma.product.count({ where: missingWhere });
+    return { enriched, failed, failedDetail, remaining };
   }
 
   /**

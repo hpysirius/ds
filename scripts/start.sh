@@ -65,24 +65,54 @@ fi
 # ---------- ② 释放端口（只清理本项目残留） ----------
 bash "$ROOT/scripts/free-ports.sh" || true
 
+# 确认端口真的释放了再启动；否则新进程会因端口被占而静默起不来
+for port in 3100 3101; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    holder="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"
+    echo "✘ 端口 $port 仍被占用 (PID ${holder})，无法安全启动。"
+    echo "  请先执行： bash stop.sh   然后重试。"
+    exit 1
+  fi
+done
+
 # ---------- ③ 依赖与构建产物 ----------
 if [ "$BUILD" = "1" ]; then
   if [ ! -d "$ROOT/backend/node_modules" ]; then
     echo "首次运行：安装后端依赖…"
     ( cd "$ROOT/backend" && npm install ) || exit 1
   fi
-  if [ ! -f "$ROOT/backend/dist/main.js" ]; then
-    echo "后端缺构建产物，先编译…"
-    ( cd "$ROOT/backend" && npm run build ) || exit 1
-  fi
   if [ ! -d "$ROOT/frontend/node_modules" ]; then
     echo "首次运行：安装前端依赖…"
     ( cd "$ROOT/frontend" && npm install ) || exit 1
   fi
-  if [ ! -f "$ROOT/frontend/.next/BUILD_ID" ]; then
-    echo "前端缺生产构建产物（.next/BUILD_ID），先编译…"
-    echo "提示：跑过 npm run dev 之后 .next 会变开发态，需要重新 build。"
+
+  # 后端：产物缺失，或源码比产物新 → 重新编译
+  # （只判断「产物是否存在」是不够的：改了源码但产物还在，重启就会一直跑旧代码）
+  need_be=0
+  [ ! -f "$ROOT/backend/dist/main.js" ] && need_be=1
+  if [ -f "$ROOT/backend/dist/main.js" ] && \
+     [ -n "$(find "$ROOT/backend/src" -type f -newer "$ROOT/backend/dist/main.js" 2>/dev/null | head -1)" ]; then
+    need_be=1
+  fi
+  if [ "$need_be" = "1" ]; then
+    echo "后端源码有更新（或缺构建产物），重新编译…"
+    ( cd "$ROOT/backend" && npm run build ) || exit 1
+  else
+    echo "  后端构建产物已是最新，跳过编译"
+  fi
+
+  # 前端：同理。注意「跑过 npm run dev」会让 .next 变成开发态，必须重新 build
+  need_fe=0
+  [ ! -f "$ROOT/frontend/.next/BUILD_ID" ] && need_fe=1
+  if [ -f "$ROOT/frontend/.next/BUILD_ID" ] && \
+     [ -n "$(find "$ROOT/frontend/src" -type f -newer "$ROOT/frontend/.next/BUILD_ID" 2>/dev/null | head -1)" ]; then
+    need_fe=1
+  fi
+  if [ "$need_fe" = "1" ]; then
+    echo "前端源码有更新（或缺生产构建产物），重新编译…（Next.js 生产构建，约 1-3 分钟）"
     ( cd "$ROOT/frontend" && npm run build ) || exit 1
+  else
+    echo "  前端构建产物已是最新，跳过编译"
   fi
 else
   if [ ! -f "$ROOT/backend/dist/main.js" ] || [ ! -f "$ROOT/frontend/.next/BUILD_ID" ]; then
@@ -126,8 +156,36 @@ fi
 
 echo "等待服务就绪…"
 ok=1
-if wait_port 3101 30; then echo "✔ 后端已启动 (PID $(cat "$ROOT/run/backend.pid" 2>/dev/null))"; else echo "✘ 后端 30 秒内没起来，看 $BACKEND_LOG"; ok=0; fi
-if wait_port 3100 60; then echo "✔ 前端已启动 (PID $(cat "$ROOT/run/frontend.pid" 2>/dev/null))"; else echo "✘ 前端 60 秒内没起来，看 $FRONTEND_LOG"; ok=0; fi
+be_pid="$(cat "$ROOT/run/backend.pid" 2>/dev/null)"
+fe_pid="$(cat "$ROOT/run/frontend.pid" 2>/dev/null)"
+
+if wait_port 3101 30; then
+  # 端口起来了，但必须确认「本项目刚启动的进程」还活着，
+  # 否则可能只是旧进程在顶着端口（曾经的重启假成功就源于此）
+  if [ -n "$be_pid" ] && kill -0 "$be_pid" 2>/dev/null; then
+    echo "✔ 后端已启动 (PID $be_pid)"
+  else
+    echo "✘ 后端端口被占用但本项目进程未存活（很可能是旧进程顶着端口或启动即崩），看 $BACKEND_LOG"
+    tail -n 20 "$BACKEND_LOG" 2>/dev/null
+    ok=0
+  fi
+else
+  echo "✘ 后端 30 秒内没起来，看 $BACKEND_LOG"
+  ok=0
+fi
+
+if wait_port 3100 60; then
+  if [ -n "$fe_pid" ] && kill -0 "$fe_pid" 2>/dev/null; then
+    echo "✔ 前端已启动 (PID $fe_pid)"
+  else
+    echo "✘ 前端端口被占用但本项目进程未存活，看 $FRONTEND_LOG"
+    tail -n 20 "$FRONTEND_LOG" 2>/dev/null
+    ok=0
+  fi
+else
+  echo "✘ 前端 60 秒内没起来，看 $FRONTEND_LOG"
+  ok=0
+fi
 
 [ "$OPEN" = "1" ] && open "http://localhost:3100"
 

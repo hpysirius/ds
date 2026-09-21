@@ -202,6 +202,20 @@ export class PricingController {
   }
 
   @Public()
+  @Post('products/fill-info')
+  @ApiOperation({ summary: '补商品信息：打开 Ozon 详情页补齐品牌/类目/月销/加购率/退货率/广告占比/上架天/发货/评论/主图等缺失字段' })
+  fillInfo(@Body() dto: FillImagesDto) {
+    return this.sourcingService.enrichMissingProducts(dto.limit ?? 5);
+  }
+
+  @Public()
+  @Post('sourcing/product-info')
+  @ApiOperation({ summary: '补单个商品信息（同 fill-info，单条触发）' })
+  async productInfo(@Body() dto: ProductImageDto) {
+    return this.sourcingService.enrichProductInfo(dto.sku || '');
+  }
+
+  @Public()
   @Post('sourcing/offer')
   @ApiOperation({ summary: '抓 1688 货品详情：价格 + 包装信息（长宽高/重量）' })
   fetchOffer(@Body() dto: OfferFetchDto) {

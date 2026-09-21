@@ -27,29 +27,27 @@ export default function ProductsPage() {
   /** 单条补图时记录哪个 sku 在抓（按钮转 loading） */
   const [fillingSku, setFillingSku] = useState<string | null>(null);
 
-  /** 补商品主图：先让后端从已有数据里捡，再用调试浏览器抓缺的（每张约 10 秒，分批发） */
-  const fillImages = async () => {
+  /** 补商品信息：打开 Ozon 详情页，补齐品牌/类目/月销/加购率/退货率/广告占比/上架天/发货/评论/主图等（限流分批） */
+  const fillInfo = async () => {
     setFilling(true);
-    let fromRaw = 0;
-    let grabbed = 0;
+    let enriched = 0;
     let lastDetail: any[] = [];
     try {
       for (let i = 0; i < 8; i++) {
-        const { data } = await http.post('/pricing/products/fill-images', { limit: 5 });
-        fromRaw += data?.fromRaw || 0;
+        const { data } = await http.post('/pricing/products/fill-info', { limit: 3 });
         lastDetail = data?.failedDetail || [];
-        grabbed += (data?.filled || []).length;
-        message.loading(`补图中… 浏览器已抓 ${grabbed} 张，还缺 ${data?.remaining ?? '?'} 个`, 0.8);
+        enriched += (data?.enriched || []).length;
+        message.loading(`补商品信息中… 已补 ${enriched} 个，还缺 ${data?.remaining ?? '?'} 个`, 0.8);
         await load(1);
-        const got = (data?.filled || []).length;
+        const got = (data?.enriched || []).length;
         if (data?.remaining === 0) break;
         if (!got && i > 0) break; // 连续抓不到就别硬循环
       }
       const detail = (lastDetail || []).map((x: any) => `${x.sku}：${x.reason}`).join('；');
-      if (grabbed || fromRaw) {
-        message.success(`补图完成：从已有数据补回 ${fromRaw} 个，浏览器新抓 ${grabbed} 张${detail ? '｜失败：' + detail : ''}`, 6);
+      if (enriched) {
+        message.success(`补商品信息完成：已补充 ${enriched} 个商品${detail ? '｜失败：' + detail : ''}`, 6);
       } else {
-        message.warning(`一张都没抓到。${detail ? '原因：' + detail : '请确认调试 Chrome 能正常打开 Ozon 页面（可能被反爬校验挡住）'}`, 8);
+        message.warning(`没有可补充的信息。${detail ? '原因：' + detail : '请确认调试 Chrome 能正常打开 Ozon 商品页（可能被反爬校验挡住）'}`, 8);
       }
       await load(1);
     } catch (e: any) {
@@ -59,20 +57,20 @@ export default function ProductsPage() {
     }
   };
 
-  /** 单条补主图：调 product-image 接口，用调试浏览器打开商品页抓 og:image（约 10-15 秒） */
-  const fillOneImage = async (sku: string) => {
+  /** 单条补商品信息：调 product-info 接口，用调试浏览器打开商品页读取全部缺失字段（约 10-20 秒） */
+  const fillOneInfo = async (sku: string) => {
     setFillingSku(sku);
-    const hide = message.loading(`正在为 ${sku} 抓主图…（约 10-15 秒，打开 Ozon 商品页读 og:image）`, 0);
+    const hide = message.loading(`正在为 ${sku} 补充商品信息…（约 10-20 秒，打开 Ozon 商品页读取品牌/类目/月销等）`, 0);
     try {
-      const { data } = await http.post('/pricing/sourcing/product-image', { sku }, { timeout: 120000 });
-      if (data?.imageUrl) {
-        message.success(`${sku} 主图已补上`, 2);
+      const { data } = await http.post('/pricing/sourcing/product-info', { sku }, { timeout: 180000 });
+      if (data?.ok) {
+        message.success(`${sku} 已补充：${(data.fields || []).join('、') || '信息'}`, 3);
         await load();
       } else {
-        message.warning(`${sku} 没抓到主图（可能页面加载超时或被反爬挡住）`, 5);
+        message.warning(`${sku} 未补充到信息（${data?.reason || '页面未提供'}）`, 5);
       }
     } catch (e: any) {
-      message.error(`${sku} 补图失败：${e.message}`, 5);
+      message.error(`${sku} 补充失败：${e.message}`, 5);
     } finally {
       hide();
       setFillingSku(null);
@@ -200,8 +198,8 @@ export default function ProductsPage() {
         size="small"
         extra={
           <Space>
-            <Button size="small" icon={<PictureOutlined />} loading={filling} onClick={fillImages}>
-              补商品主图
+            <Button size="small" icon={<PictureOutlined />} loading={filling} onClick={fillInfo}>
+              补商品信息
             </Button>
             <Button size="small" icon={<DownloadOutlined />} onClick={exportCsv} disabled={!list.length}>
               导出当前页
@@ -214,7 +212,7 @@ export default function ProductsPage() {
           size="small"
           loading={loading}
           dataSource={list}
-          scroll={{ x: 1700 }}
+          scroll={{ x: 1800 }}
           locale={{ emptyText: <Empty description="还没有商品，先去「数据采集」跑一轮" /> }}
           pagination={{
             current: page,
@@ -277,6 +275,15 @@ export default function ProductsPage() {
             },
             { title: '类目', dataIndex: 'category3Name', width: 130, ellipsis: true },
             { title: '品牌', dataIndex: 'brand', width: 100 },
+            {
+              title: '价格',
+              dataIndex: 'price',
+              width: 96,
+              align: 'right',
+              sorter: true,
+              render: (v: any) =>
+                v === null || v === undefined ? '—' : <span className="mono">{Number(v).toLocaleString('ru-RU')} ₽</span>,
+            },
             { title: '月销', dataIndex: 'soldCount', width: 72, align: 'right', sorter: true },
             {
               title: '加购率',
@@ -325,9 +332,9 @@ export default function ProductsPage() {
                     type="link"
                     size="small"
                     loading={fillingSku === r.sku}
-                    onClick={() => fillOneImage(r.sku)}
+                    onClick={() => fillOneInfo(r.sku)}
                   >
-                    补主图
+                    补信息
                   </Button>
                 </Space>
               ),
