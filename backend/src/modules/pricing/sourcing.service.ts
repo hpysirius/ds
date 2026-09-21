@@ -70,6 +70,16 @@ const PUBLIC_PROBE_JS = `(function(){
 })()`.replace(/\s*\n\s*/g, ' ');
 
 /**
+ * 抓商品信息时用不到的大资源：图片、字体、音视频。
+ * 屏蔽后页面加载明显变快（实测快 2~3 秒），而我们要的数据都在 HTML 的 JSON-LD / meta 里，
+ * 主图也是 og:image 这个 meta 标签，不需要真的把图片下载下来。
+ */
+const HEAVY_RESOURCE_PATTERNS = [
+  '*.jpg', '*.jpeg', '*.png', '*.webp', '*.avif', '*.gif', '*.svg',
+  '*.woff', '*.woff2', '*.ttf', '*.otf', '*.mp4', '*.webm', '*.ico',
+];
+
+/**
  * 等页面主体渲染完再抓。踩过的坑：Ozon 是 React 应用，类目面包屑是 JS 延迟渲染的 ——
  * 实测刚跳转过去时 body 还是空的（0ms 时 bodyLen=0、面包屑为空），3~5 秒后才出现。
  * 只等 URL 跳转就开抓，就只能拿到服务端渲染的 meta 标签（title/主图/价格），
@@ -479,6 +489,7 @@ export class SourcingService {
     url: string,
     fn: (cdp: CdpClient, sessionId: string, ev: (expr: string, tries?: number) => Promise<any>) => Promise<T>,
     settleMs = 8000,
+    opts: { blockHeavy?: boolean } = {},
   ): Promise<T> {
     await this.ensureBrowser();
     const ver = await this.browser.version();
@@ -486,7 +497,18 @@ export class SourcingService {
     await cdp.connect();
     let openedTargetId: string | null = null;
     try {
-      const created = await cdp.send('Target.createTarget', { url }, undefined, 20000);
+      /*
+       * blockHeavy：先开空白页、把图片/字体/媒体屏蔽掉，再导航。
+       * 顺序很重要 —— 必须「先设屏蔽、后导航」，否则图片已经开始下载了，拦不住。
+       * 实测（同一商品）：不屏蔽时 JSON-LD 3.6s / 面包屑 8.2s；屏蔽后 1.6s / 5.8s。
+       * 抓商品信息只需要 HTML 里的 JSON-LD 和 meta，图片本身用不着（主图是 og:image 这个标签）。
+       */
+      const created = await cdp.send(
+        'Target.createTarget',
+        { url: opts.blockHeavy ? 'about:blank' : url },
+        undefined,
+        20000,
+      );
       openedTargetId = created.result?.targetId || null;
       const attached = await cdp.send(
         'Target.attachToTarget',
@@ -495,6 +517,16 @@ export class SourcingService {
         8000,
       );
       const sessionId = attached.result.sessionId;
+
+      if (opts.blockHeavy) {
+        try {
+          await cdp.send('Network.enable', {}, sessionId, 5000);
+          await cdp.send('Network.setBlockedURLs', { urls: HEAVY_RESOURCE_PATTERNS }, sessionId, 5000);
+        } catch (e) {
+          /* 屏蔽失败也继续，只是慢一点 */
+        }
+        await cdp.send('Page.navigate', { url }, sessionId, 15000).catch(() => undefined);
+      }
 
       // 域开关要趁早开：页面加载约 10 秒后渲染进程会被插件 / 风控脚本占满，
       // 那时候连 Page.enable 都不回包了（实测过，等 12 秒再求值必超时）
@@ -1005,27 +1037,34 @@ export class SourcingService {
           await this.waitFor(ev, `location.href.indexOf('/product/') >= 0`, 15000, 400);
 
           /*
-           * 再等页面主体渲染完：类目面包屑是 JS 延迟渲染的，刚跳转时还没有，
-           * 不等的话只能抓到服务端渲染的 meta（title/主图/价格），类目和评论永远读不到。
-           * 上限 8 秒，等不到也继续（不会像旧版那样死等 60 秒）。
+           * ① 先立刻读一次。JSON-LD 是服务端渲染的，实测导航完 ~1.6 秒就可读，
+           *    里面已经有 title / 主图 / 价格 / 品牌 / 评分 / 评论数。
+           *    旧版在这里死等插件注入 60 秒 —— 插件卸载后那是纯浪费，是「补信息很慢」的主因。
            */
-          await this.waitFor(ev, WAIT_READY_JS, 8000, 500);
+          const probeOnce = async (): Promise<any> => {
+            const probe = await ev(PUBLIC_PROBE_JS, 2);
+            if (typeof probe !== 'string') return null;
+            try { return JSON.parse(probe); } catch (e) { return null; }
+          };
+
+          let last: any = await probeOnce();
+          if (last && !(last.title || last.imageUrl || last.price)) {
+            // 首个结果太空就短促重试一次
+            await sleep(600);
+            const again = await probeOnce();
+            if (again) last = again;
+          }
 
           /*
-           * 公开数据是 SSR 直接带在 HTML 里的，不需要等插件注入：读一次就走。
-           * 只有当还没拿到任何有用字段时才快速重试几次（间隔很短），
-           * 旧版在这里死等插件 60 秒 —— 插件卸载后那就是纯浪费，是「补信息很慢」的主因。
+           * ② 只有类目还没拿到时才等面包屑渲染。面包屑是 JS 延迟渲染的，
+           *    实测要 5~8 秒才出现（不屏蔽资源时 8.2 秒，屏蔽后 5.8 秒）—— 它是最大的耗时项。
+           *    所以：已经有类目的商品 ~2 秒就结束，缺类目的才多等这几秒。
+           *    上限 8 秒，等不到也照旧返回已拿到的字段。
            */
-          let last: any = null;
-          for (let i = 0; i < 3; i++) {
-            const probe = await ev(PUBLIC_PROBE_JS, 2);
-            let parsed: any = null;
-            if (typeof probe === 'string') {
-              try { parsed = JSON.parse(probe); } catch (e) { /* ignore */ }
-            }
-            if (parsed) last = parsed;
-            if (parsed && (parsed.title || parsed.brand || parsed.imageUrl || parsed.price || parsed.reviewsCount)) break;
-            await sleep(700);
+          if (!last || !last.categoryPath) {
+            await this.waitFor(ev, WAIT_READY_JS, 8000, 500);
+            const again = await probeOnce();
+            if (again && (again.categoryPath || !last)) last = again;
           }
           // 主图兜底：og:image 没拿到时再从页面图片里找一张
           if (last && !last.imageUrl) {
@@ -1035,6 +1074,7 @@ export class SourcingService {
           return last;
         },
         3000,
+        { blockHeavy: true },
       );
     } catch (e: any) {
       return { sku, ok: false, fields: [], reason: String(e.message || e).slice(0, 160) };
