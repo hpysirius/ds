@@ -83,10 +83,14 @@ export class BrowserService {
 
   /** 生成包装 app，让 open 以「非沙箱」方式带参数启动 Chrome */
   writeWrapperApp() {
+    // 自动加载「中实跨境ERP」插件（unpacked），让"补信息"能读到插件渲染的商品卡（月销/加购率/退货率等）
+    const extDir = process.env.DS_OZON_EXTENSION_DIR || '/Users/huanghui/Downloads/sd-plugin-3.8.6';
+    const extArg = extDir && fs.existsSync(extDir) ? `--load-extension="${extDir}" ` : '';
     fs.mkdirSync(path.join(this.appDir, 'Contents/MacOS'), { recursive: true });
     const script =
       '#!/bin/bash\n' +
       `exec "${this.chromeBin}" --remote-debugging-port=${this.port} --remote-allow-origins=* ` +
+      extArg +
       `--user-data-dir=${this.profileDir} --no-first-run --no-default-browser-check ` +
       /*
        * 防节流：浏览器被别的窗口盖住/不在最前时，Chrome 会节流甚至冻结后台标签的渲染进程，

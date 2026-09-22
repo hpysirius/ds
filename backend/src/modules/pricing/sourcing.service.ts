@@ -86,6 +86,29 @@ const HEAVY_RESOURCE_PATTERNS = [
  * 类目、评论这些永远读不到。这里以「面包屑锚点出现」作为主体就绪信号。
  * 有 8 秒上限，等不到也照旧往下走，不会像旧版那样无条件死等 60 秒。
  */
+/**
+ * 页面状态判定：挑战页 / 就绪 / 加载中。
+ *
+ * 踩过的坑：调试 Chrome 导航 Ozon 时会先落到「Antibot Challenge Page」（反爬挑战，
+ * 实测 ~15 秒自动放行），偶尔还会落到 Ozon 的「Поxоже, нет соединения」错误页。
+ * 旧代码不等挑战放行就开抓，probe 兜底把 document.title（"Antibot Challenge Page"）
+ * 当商品标题写进了库 —— 这就是截图里那两行脏数据的来源。
+ * 所以：先判定状态，挑战就等它放行（最多 45s，中途 reload 一次），就绪才抓。
+ */
+const PAGE_STATE_JS = `(function(){
+  try{
+    var t=String(document.title||'');
+    if(/Antibot|нет соединени|Доступ ограничен|Access Denied|拒绝连接|ERR_(CONNECTION|INTERNET|NAME|PROXY|SSL)/i.test(t)) return 'challenge';
+    var ld=document.querySelectorAll('script[type="application/ld+json"]').length;
+    var h1=document.querySelector('h1');
+    if(ld>0||(h1&&String(h1.innerText||'').trim().length>0)) return 'ready';
+    return 'loading';
+  }catch(e){return 'loading';}
+})()`.replace(/\s*\n\s*/g, ' ');
+
+/** 挑战/错误页的标题特征 —— 写库前的最后一道闸，绝不把这种垃圾当商品标题存进去 */
+const BAD_TITLE_RE = /antibot|нет соединени|доступ ограничен|access denied|拒绝连接|无法访问此网站/i;
+
 const WAIT_READY_JS = `(function(){
   try{
     if(document.querySelector('[data-widget*="bread"] a')) return true;
@@ -93,6 +116,52 @@ const WAIT_READY_JS = `(function(){
     if(document.querySelector('[class*="breadcrumb"] a')) return true;
     return false;
   }catch(e){ return false; }
+})()`.replace(/\s*\n\s*/g, ' ');
+
+/**
+ * 读「闪电采集」插件渲染出来的商品卡（可选增强）。
+ *
+ * 插件（中实跨境ERP，manifest 里叫「闪电采集」）会把它从 Ozon 卖家后台分析接口
+ * /api/site/seller-analytics/what_to_sell/data/v3 拿到的经营指标，渲染成一张商品卡插进页面。
+ * 那些指标（月销/加购率/退货取消率/广告占比/上架时间等）公开页面上根本没有，
+ * 只有登录了 Ozon 卖家账号、且插件装好时才会出现。
+ *
+ * 卡片结构：容器 [data-s2-ozon-sku] / .s2-widget-card / .s2-tile-host / #s2-pdp-real-price-card，
+ * 每个字段一行 [data-s2-field-key="<key>"]，值在 .s2-widget-value 里。
+ * 字段 key（插件源码实测）：soldCount 月销量 / soldSum 月销售额 / drr 广告费占比 /
+ * daysInPromo 参与促销天数 / discount 参与促销折扣 / daysWithTrafarets 付费推广天数 /
+ * convToCartPdp 商品卡加购率 / convToCartSearch 搜索加购率 / redemptionRate 退货取消率 /
+ * createDate 上架时间 / salesSchema 发货模式 / brand 品牌 / category 类目 等。
+ *
+ * 没装插件 / 没登录卖家号时这里返回空对象，不影响其它字段。
+ */
+const PLUGIN_CARD_JS = `(function(){
+  var out={};
+  function clean(s){return String(s==null?'':s).replace(/[\\s\\u00a0]+/g,' ').trim();}
+  function num(v){if(v==null)return null;var s=clean(v).replace(/[%\\s\\u00a0,]/g,'').replace(/[^0-9.\\-]/g,'');var n=parseFloat(s);return isNaN(n)?null:n;}
+  try{
+    var hosts=document.querySelectorAll('[data-s2-ozon-sku],.s2-widget-card,.s2-tile-host,#s2-pdp-real-price-card');
+    for(var h=0;h<hosts.length;h++){
+      var rows=hosts[h].querySelectorAll('[data-s2-field-key]');
+      for(var i=0;i<rows.length;i++){
+        var k=rows[i].getAttribute('data-s2-field-key');
+        if(!k) continue;
+        var ve=rows[i].querySelector('.s2-widget-value');
+        var t;
+        if(ve){ t=ve.innerText||ve.textContent; }
+        else{
+          var le=rows[i].querySelector('.s2-widget-label');
+          t=rows[i].innerText||rows[i].textContent||'';
+          if(le){ var lv=clean(le.innerText||le.textContent); var all=clean(t); if(lv&&all.indexOf(lv)===0) t=all.slice(lv.length); else t=all; }
+        }
+        t=clean(t);
+        if(!t) continue;
+        var n=num(t);
+        out[k]=n!==null?n:t;
+      }
+    }
+  }catch(e){}
+  return JSON.stringify(out);
 })()`.replace(/\s*\n\s*/g, ' ');
 
 
@@ -489,43 +558,81 @@ export class SourcingService {
     url: string,
     fn: (cdp: CdpClient, sessionId: string, ev: (expr: string, tries?: number) => Promise<any>) => Promise<T>,
     settleMs = 8000,
-    opts: { blockHeavy?: boolean } = {},
+    opts: { blockHeavy?: boolean; reuseTab?: boolean } = {},
   ): Promise<T> {
     await this.ensureBrowser();
     const ver = await this.browser.version();
     const cdp = new CdpClient(new URL(ver.webSocketDebuggerUrl));
     await cdp.connect();
     let openedTargetId: string | null = null;
+    let keepOpen = !!opts.reuseTab;
+    let sessionId = '';
     try {
       /*
-       * blockHeavy：先开空白页、把图片/字体/媒体屏蔽掉，再导航。
-       * 顺序很重要 —— 必须「先设屏蔽、后导航」，否则图片已经开始下载了，拦不住。
-       * 实测（同一商品）：不屏蔽时 JSON-LD 3.6s / 面包屑 8.2s；屏蔽后 1.6s / 5.8s。
-       * 抓商品信息只需要 HTML 里的 JSON-LD 和 meta，图片本身用不着（主图是 og:image 这个标签）。
+       * reuseTab：复用一个常驻标签页连续导航。
+       * 每个商品都新开标签 = 每次都可能重新触发 Ozon 反爬挑战（实测新标签首跳必被挑战，
+       * 同一标签页连续导航第二次起就不再挑战）。所以 Ozon 采集统一走复用标签：
+       * 找不到常驻页就新建一个（about:blank 带 #ds-enrich-tab 标记），用完不关，留给下一单。
        */
-      const created = await cdp.send(
-        'Target.createTarget',
-        { url: opts.blockHeavy ? 'about:blank' : url },
-        undefined,
-        20000,
-      );
-      openedTargetId = created.result?.targetId || null;
-      const attached = await cdp.send(
-        'Target.attachToTarget',
-        { targetId: created.result.targetId, flatten: true },
-        undefined,
-        8000,
-      );
-      const sessionId = attached.result.sessionId;
-
-      if (opts.blockHeavy) {
+      if (opts.reuseTab) {
         try {
-          await cdp.send('Network.enable', {}, sessionId, 5000);
-          await cdp.send('Network.setBlockedURLs', { urls: HEAVY_RESOURCE_PATTERNS }, sessionId, 5000);
+          const tg = await cdp.send('Target.getTargets', {}, undefined, 8000);
+          const pages = (tg.result?.targetInfos || []).filter((t: any) => t.type === 'page');
+          const tab =
+            pages.find((t: any) => String(t.url || '').indexOf('#ds-enrich-tab') >= 0) ||
+            pages.find((t: any) => /^https:\/\/www\.ozon\.ru/.test(String(t.url || '')));
+          if (tab) {
+            openedTargetId = tab.targetId;
+            const attached = await cdp.send(
+              'Target.attachToTarget',
+              { targetId: tab.targetId, flatten: true },
+              undefined,
+              8000,
+            );
+            sessionId = attached.result.sessionId;
+            if (opts.blockHeavy) {
+              try {
+                await cdp.send('Network.enable', {}, sessionId, 5000);
+                await cdp.send('Network.setBlockedURLs', { urls: HEAVY_RESOURCE_PATTERNS }, sessionId, 5000);
+              } catch (e) {
+                /* 屏蔽失败也继续，只是慢一点 */
+              }
+            }
+            await cdp.send('Page.navigate', { url }, sessionId, 25000).catch(() => undefined);
+          }
         } catch (e) {
-          /* 屏蔽失败也继续，只是慢一点 */
+          /* 找不到/复用失败就落到下面的新建流程 */
         }
-        await cdp.send('Page.navigate', { url }, sessionId, 15000).catch(() => undefined);
+      }
+
+      if (!sessionId) {
+        /*
+         * blockHeavy：先开空白页、把图片/字体/媒体屏蔽掉，再导航。
+         * 顺序很重要 —— 必须「先设屏蔽、后导航」，否则图片已经开始下载了，拦不住。
+         * 实测（同一商品）：不屏蔽时 JSON-LD 3.6s / 面包屑 8.2s；屏蔽后 1.6s / 5.8s。
+         * 抓商品信息只需要 HTML 里的 JSON-LD 和 meta，图片本身用不着（主图是 og:image 这个标签）。
+         * reuseTab 模式下新建的标签带 #ds-enrich-tab 标记，方便下一轮复用。
+         */
+        const initialUrl = opts.blockHeavy ? (opts.reuseTab ? 'about:blank#ds-enrich-tab' : 'about:blank') : url;
+        const created = await cdp.send('Target.createTarget', { url: initialUrl }, undefined, 20000);
+        openedTargetId = created.result?.targetId || null;
+        const attached = await cdp.send(
+          'Target.attachToTarget',
+          { targetId: created.result.targetId, flatten: true },
+          undefined,
+          8000,
+        );
+        sessionId = attached.result.sessionId;
+
+        if (opts.blockHeavy) {
+          try {
+            await cdp.send('Network.enable', {}, sessionId, 5000);
+            await cdp.send('Network.setBlockedURLs', { urls: HEAVY_RESOURCE_PATTERNS }, sessionId, 5000);
+          } catch (e) {
+            /* 屏蔽失败也继续，只是慢一点 */
+          }
+          await cdp.send('Page.navigate', { url }, sessionId, 15000).catch(() => undefined);
+        }
       }
 
       // 域开关要趁早开：页面加载约 10 秒后渲染进程会被插件 / 风控脚本占满，
@@ -600,8 +707,9 @@ export class SourcingService {
       /*
        * 用完就把标签关掉。踩过的坑：每次抓图都新开一个 Ozon 商品页且不关，
        * 十来个重页面把渲染进程池占满后，新标签直接不响应（求值全部抛异常 → 补图失败）。
+       * reuseTab 模式例外：常驻标签要留给下一单复用（关了它 = 下一单又从头吃反爬挑战）。
        */
-      if (openedTargetId) {
+      if (openedTargetId && !keepOpen) {
         await cdp.send('Target.closeTarget', { targetId: openedTargetId }, undefined, 6000).catch(() => undefined);
       }
       try {
@@ -1032,9 +1140,45 @@ export class SourcingService {
         async (_cdp, _sessionId, ev) => {
           /*
            * 新建标签页初始停在 about:blank，此时 readyState 已是 complete，
-           * 不加判断直接抓会对着空白页抓一通（踩过）。先等 URL 真的跳到商品页。
+           * 不加判断直接抓会对着空白页抓一通（踩过）。
+           * 复用标签页时更狠：页面可能还停在**上一个商品**，旧 URL 同样匹配 /product/，
+           * 不等 URL 变成当前 sku 就开抓 = 把 A 商品的数据写到 B 头上（串数据事故）。
+           * 所以优先等「URL 里出现当前 sku」，等不到再退回 /product/ 判定。
            */
-          await this.waitFor(ev, `location.href.indexOf('/product/') >= 0`, 15000, 400);
+          /*
+           * ⓪ 反爬挑战放行 + 坏链接快速失败：把「等 URL 变成当前 sku」和「等页面就绪」合并成一个循环，
+           *    避免两次等待串行叠加浪费时间。
+           *    - 挑战页（Antibot）：实测 ~15s 自动放行；卡住 ~14s 仍不过就 reload 一次，最多等 30s。
+           *    - 链接无效/已下架：Ozon 会把商品页 302 到 /search/，sku 永远不出现 → 几秒内就放弃，不空转。
+           *    旧代码没这层：要么对着挑战页开抓（脏数据），要么在重定向页上干等 60s（慢得要死）。
+           */
+          const waitDeadline = Date.now() + 30000;
+          let reloaded = false;
+          let state: string = '';
+          while (Date.now() < waitDeadline) {
+            const href = String((await ev('location.href', 1)) || '');
+            if (href.indexOf('/search/') >= 0 && href.indexOf('/product/') < 0) {
+              throw new BadRequestException('商品链接无效或已被下架（Ozon 重定向到了搜索页）');
+            }
+            if (href.indexOf(sku) >= 0) {
+              state = String((await ev(PAGE_STATE_JS, 1)) || 'loading');
+              if (state === 'ready') break;
+            } else {
+              state = 'loading';
+            }
+            if (state === 'challenge' && !reloaded && waitDeadline - Date.now() < 16000) {
+              reloaded = true;
+              await ev('location.reload(); true', 1);
+            }
+            await sleep(1500);
+          }
+          if (state !== 'ready') {
+            throw new BadRequestException(
+              state === 'challenge'
+                ? 'Ozon 反爬拦截（可在弹出的调试 Chrome 里手动打开一次该商品页后再试）'
+                : 'Ozon 页面长时间未就绪',
+            );
+          }
 
           /*
            * ① 先立刻读一次。JSON-LD 是服务端渲染的，实测导航完 ~1.6 秒就可读，
@@ -1071,15 +1215,64 @@ export class SourcingService {
             const og = await ev(OG_IMAGE_JS, 2);
             if (og && og !== 'null' && og !== '__TIMEOUT__') last.imageUrl = String(og);
           }
+
+          /*
+           * ③ 顺带读「闪电采集」插件的商品卡（可选增强）。
+           *    月销 / 加购率 / 退货取消率 / 广告占比 / 上架时间 这些只有插件才有。
+           *    先读一次；读不到时，只有确认「插件容器确实存在」才值得等它渲染
+           *    （没装插件就不等，避免白等几秒 —— 这点对速度很关键）。
+           */
+          const readCard = async (): Promise<any> => {
+            const raw = await ev(PLUGIN_CARD_JS, 1);
+            if (typeof raw !== 'string') return null;
+            try {
+              const o = JSON.parse(raw);
+              return o && Object.keys(o).length ? o : null;
+            } catch (e) {
+              return null;
+            }
+          };
+          let card: any = await readCard();
+          if (!card) {
+            const hasHost = await ev(
+              `(function(){try{return !!document.querySelector('[data-s2-ozon-sku],.s2-widget-card,.s2-tile-host,#s2-pdp-real-price-card');}catch(e){return false;}})()`,
+              1,
+            );
+            if (hasHost === true) {
+              await this.waitFor(
+                ev,
+                `(function(){try{return document.querySelectorAll('[data-s2-field-key]').length>0;}catch(e){return false;}})()`,
+                6000,
+                500,
+              );
+              card = await readCard();
+            }
+          }
+          if (card) {
+            last = last || {};
+            last.pluginCard = card;
+          }
           return last;
         },
         3000,
-        { blockHeavy: true },
+        { blockHeavy: true, reuseTab: true },
       );
     } catch (e: any) {
       return { sku, ok: false, fields: [], reason: String(e.message || e).slice(0, 160) };
     }
     if (!best) return { sku, ok: false, fields: [], reason: '未读到详情页数据' };
+
+    /*
+     * 最后一道闸：挑战页/错误页的标题绝不入库（双保险，上面 ⓪ 正常已经拦住）。
+     * 否则就会出现列表里商品名叫 "Antibot Challenge Page" 这种脏数据（实测踩过）。
+     */
+    if (best.title && BAD_TITLE_RE.test(String(best.title))) {
+      this.logger.warn(`[${sku}] 检测到反爬/错误页标题，丢弃不写库：${String(best.title).slice(0, 60)}`);
+      delete best.title;
+      if (!best.price && !best.imageUrl && !best.categoryPath) {
+        return { sku, ok: false, fields: [], reason: 'Ozon 返回的是反爬/错误页，未写入任何数据' };
+      }
+    }
 
     const data: any = {};
     const set = (k: string, v: any) => { if (v !== null && v !== undefined && v !== '') data[k] = v; };
@@ -1093,6 +1286,50 @@ export class SourcingService {
     set('rating', toNum(best.rating));
     set('reviewsCount', toNum(best.reviewsCount));
     set('salesSchema', toStr(best.salesSchema));
+
+    /*
+     * 插件商品卡的字段（有就写，没有就完全不动原有值）。
+     * 这些是公开页面上根本没有、只有登录 Ozon 卖家账号后插件才拿得到的经营指标。
+     * 注意 redemptionRate 是插件的「退货取消率」→ 我们的 cancelRate。
+     */
+    const c: any = best.pluginCard || {};
+    const setNum = (k: string, v: any) => {
+      const n = toNum(v);
+      if (n !== null) set(k, n);
+    };
+    setNum('soldCount', c.soldCount);
+    setNum('soldSum', c.soldSum);
+    setNum('drr', c.drr);
+    setNum('daysWithTrafarets', c.daysWithTrafarets);
+    setNum('daysInPromo', c.daysInPromo);
+    setNum('discount', c.discount);
+    setNum('convToCartPdp', c.convToCartPdp);
+    setNum('convToCartSearch', c.convToCartSearch);
+    setNum('cancelRate', c.redemptionRate);
+    set('salesSchema', toStr(c.salesSchema));
+    set('brand', toStr(c.brand));
+    set('categoryPath', toStr(c.category));
+    /*
+     * 上架时间：插件可能给天数（"120"），也可能给日期（"2025-06-18" / "18.06.2025"）。
+     * 必须先判日期再判数字 —— 否则 "2025-06-18" 会被 parseFloat 读成 2025，
+     * 直接把「上架天」写成 2025 天（实测踩到过）。
+     */
+    const cd = c.createDate;
+    if (cd !== null && cd !== undefined && cd !== '') {
+      const s = String(cd);
+      const dateLike = /\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[-./]\d{1,2}[-./]\d{4}/.test(s);
+      if (dateLike) {
+        const norm = s.replace(/(\d{1,2})[.](\d{1,2})[.](\d{4})/, '$3-$2-$1').replace(/\//g, '-');
+        const d = new Date(norm);
+        if (!Number.isNaN(d.getTime())) {
+          set('createDays', Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000)));
+        }
+      } else {
+        const n = toNum(cd);
+        if (n !== null) set('createDays', n);
+      }
+    }
+
     data.raw = best;
     data.lastSeenAt = new Date();
 
@@ -1100,12 +1337,24 @@ export class SourcingService {
       return { sku, ok: false, fields: [], reason: 'Ozon 详情页未提供任何可补充的字段' };
     }
     await this.prisma.product.update({ where: { sku }, data });
-    // 只有真读到评分/评论才落一条指标，避免每次都插一条空记录
-    if (data.rating != null || data.reviewsCount != null) {
+    // 只有真读到指标才落一条记录，避免每次都插一条空行
+    const metricKeys = [
+      'soldCount', 'soldSum', 'drr', 'daysWithTrafarets', 'convToCartPdp',
+      'convToCartSearch', 'cancelRate', 'createDays', 'rating', 'reviewsCount',
+    ];
+    if (metricKeys.some((k) => data[k] != null)) {
       await this.prisma.productMetric.create({
         data: {
           productId: product.id,
           taskId: null,
+          soldCount: data.soldCount ?? null,
+          soldSum: data.soldSum ?? null,
+          drr: data.drr ?? null,
+          daysWithTrafarets: data.daysWithTrafarets ?? null,
+          convToCartPdp: data.convToCartPdp ?? null,
+          convToCartSearch: data.convToCartSearch ?? null,
+          cancelRate: data.cancelRate ?? null,
+          createDays: data.createDays ?? null,
           rating: data.rating ?? null,
           reviewsCount: data.reviewsCount ?? null,
         },
@@ -1135,7 +1384,6 @@ export class SourcingService {
         { categoryPath: null },
         { imageUrl: null },
         { price: null },
-        { reviewsCount: null },
       ],
     };
     const rows = await this.prisma.product.findMany({
