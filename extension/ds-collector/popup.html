@@ -64,8 +64,13 @@
       <div class="sub">跑在<b>正常浏览器</b>里采集，不走调试模式 · 不受反爬挑战</div>
 
       <div class="row">
-        <input id="api" type="text" placeholder="后端地址 http://localhost:3101" />
+        <input id="api" type="text" placeholder="后端地址 http://localhost:3101 或 http://IP/api" />
         <button id="saveApi">保存</button>
+      </div>
+
+      <div class="row" style="margin-top:-2px">
+        <button id="useLocal" style="flex:1">填本地</button>
+        <button id="useServer" style="flex:1">填服务器</button>
       </div>
 
       <div class="status">

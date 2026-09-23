@@ -1,6 +1,10 @@
 /** 弹窗交互：状态显示 + 触发采集 */
 const $ = (id) => document.getElementById(id);
 
+// 常用后端地址一键填入：本地开发 / 已部署的服务器（服务器走 nginx，接口都在 /api 下）
+const PRESET_LOCAL = 'http://localhost:3101';
+const PRESET_SERVER = 'http://114.132.99.141/api';
+
 async function send(msg) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false, error: '无响应' }));
@@ -34,7 +38,8 @@ async function refresh() {
     $('apiState').textContent = `已连接 ${p.api}`;
     $('remaining').textContent = p.remaining != null ? p.remaining : '-';
   } else {
-    $('apiState').textContent = `连不上后端（${p.error || 'HTTP ' + p.status}）`;
+    // 错误信息由 background 给出（本地/远程提示不同），这里原样展示，避免"连不上后端（连不上后端…）"套娃
+    $('apiState').textContent = p.error || `HTTP ${p.status}`;
     $('remaining').textContent = '-';
   }
 }
@@ -57,6 +62,16 @@ $('saveApi').onclick = async () => {
   btn.textContent = '已保存 ✓';
   setTimeout(() => { btn.textContent = '保存'; }, 1500);
 };
+
+// 一键填入常用地址（填完直接保存，省一次点击）
+async function usePreset(v) {
+  $('api').value = v;
+  $('api').blur();
+  await send({ type: 'DS_SET_API', api: v });
+  await refresh();
+}
+$('useLocal').onclick = () => usePreset(PRESET_LOCAL);
+$('useServer').onclick = () => usePreset(PRESET_SERVER);
 
 $('collect').onclick = async () => {
   $('collect').disabled = true;

@@ -109,36 +109,37 @@ export function collectProduct() {
     }
   } catch (e) { /* ignore */ }
 
-  // ④ 中实ERP / 闪电采集 插件的商品卡（可选增强）
+  // ④ 选品插件（中卖搏通ERP / 中实ERP / 闪电采集）渲染的商品卡（可选增强）
   try {
     const card = {};
-    const hosts = document.querySelectorAll(
-      '[data-s2-ozon-sku],.s2-widget-card,.s2-tile-host,#s2-pdp-real-price-card',
-    );
-    for (let h = 0; h < hosts.length; h++) {
-      const rows = hosts[h].querySelectorAll('[data-s2-field-key]');
+    const readRows = (rows) => {
       for (let i = 0; i < rows.length; i++) {
         const k = rows[i].getAttribute('data-s2-field-key');
-        if (!k) continue;
+        if (!k || card[k] !== undefined) continue;
         const ve = rows[i].querySelector('.s2-widget-value');
-        let t;
-        if (ve) {
-          t = ve.innerText || ve.textContent;
-        } else {
-          const le = rows[i].querySelector('.s2-widget-label');
-          t = rows[i].innerText || rows[i].textContent || '';
-          if (le) {
-            const lv = txt(le.innerText || le.textContent);
-            const all = txt(t);
-            t = lv && all.indexOf(lv) === 0 ? all.slice(lv.length) : all;
+        let t = '';
+        if (k === 'rfbsCommission' && ve) {
+          // rFBS 佣金是三档标签（12% / 14% / 20%），直接拼会变成假数字，用 / 连接
+          const bands = ve.querySelectorAll('.s2-widget-rfbs-band');
+          if (bands.length) {
+            const parts = [];
+            for (let b = 0; b < bands.length; b++) parts.push(txt(bands[b].innerText || bands[b].textContent));
+            t = parts.join('/');
           }
         }
+        if (!t) t = ve ? (ve.innerText || ve.textContent) : (rows[i].innerText || rows[i].textContent || '');
         t = txt(t);
         if (!t) continue;
-        const n = num(t.replace(/[%\s\u00a0,]/g, ''));
+        const n = t.indexOf('/') < 0 ? num(t.replace(/[%\s\u00a0,]/g, '')) : null;
         card[k] = n !== null ? n : t;
       }
-    }
+    };
+    const hosts = document.querySelectorAll(
+      '[data-s2-ozon-sku],.s2-widget-card,.s2-widget-ready-content,.s2-tile-host,#s2-pdp-real-price-card',
+    );
+    for (let h = 0; h < hosts.length; h++) readRows(hosts[h].querySelectorAll('[data-s2-field-key]'));
+    // 兜底：widget 挂载点类名变了也照样能读到字段
+    if (!Object.keys(card).length) readRows(document.querySelectorAll('[data-s2-field-key]'));
     if (Object.keys(card).length) out.pluginCard = card;
   } catch (e) { /* 没装插件就跳过 */ }
 
@@ -165,9 +166,19 @@ export function collectList() {
     const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
     return isNaN(n) ? null : n;
   };
-  // 促销标签 / 日期 / 评论数：这些都不是标题，要剔掉
+  // 促销标签 / 日期 / 评论数 / 库存提示：这些都不是标题，要剔掉
   const LABEL = /^(Новинка|Распродажа|Хит|Выгодно|Топ|Лучшая цена|Скидка|Подарок|Кэшбэк)/i;
   const DATE = /^\d{1,2}\s*(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)/i;
+  const STOCK = /仅剩|остал/i;
+
+  /*
+   * 第三方选品插件（中卖搏通ERP 等）会把浮层 widget 注进商品卡片 DOM：
+   * 「中卖搏通ERP选品标签：类目：---rFBS佣金：…」整段文本很容易被当成标题抓走（实测踩过）。
+   * 所以凡是「在 widget 里」或「子树里含 widget」的元素一律跳过。
+   */
+  const WIDGET_SEL = '[class*="s2-widget"],[class*="s2-tile"],[data-s2-ozon-sku]';
+  const touchedByWidget = (el) =>
+    !!(el.closest && (el.closest(WIDGET_SEL) || el.querySelector(WIDGET_SEL)));
 
   const cards = document.querySelectorAll('div[class*="tile-root"]');
   for (let i = 0; i < cards.length; i++) {
@@ -190,6 +201,7 @@ export function collectList() {
 
     const els = card.querySelectorAll('span,div,a');
     for (let j = 0; j < els.length; j++) {
+      if (touchedByWidget(els[j])) continue; // 插件浮层里的文本一律不看
       const t = txt(els[j].textContent);
       if (!t || t.length > 400) continue;
 
@@ -205,13 +217,13 @@ export function collectList() {
         const am = t.match(/^(\d[.,]\d)\s*$/);
         if (am) { rating = num(am[1].replace(',', '.')); continue; }
       }
-      // 标题：第一条够长、不含价格符号、不是标签/日期/评论的文本
-      if (!title && t.length >= 8 && t.indexOf('₽') < 0 && !LABEL.test(t) && !DATE.test(t) && !/отзыв/i.test(t)) {
+      // 标题：第一条够长、不含价格符号、不是标签/日期/评论/库存的文本
+      if (!title && t.length >= 6 && t.indexOf('₽') < 0 && !LABEL.test(t) && !DATE.test(t) && !STOCK.test(t) && !/отзыв/i.test(t)) {
         title = t;
       }
     }
 
-    items.push({
+    const item = {
       sku,
       title: title || null,
       price,
@@ -219,7 +231,36 @@ export function collectList() {
       productUrl: href.indexOf('http') === 0 ? href : 'https://www.ozon.ru' + href,
       rating,
       reviewsCount,
-    });
+    };
+
+    // 卡片上若挂着选品插件的浮层（月销/佣金/类目等经营指标），有就一并带上报给后端
+    try {
+      const pc = {};
+      const rows = card.querySelectorAll('[data-s2-field-key]');
+      for (let r = 0; r < rows.length; r++) {
+        const k = rows[r].getAttribute('data-s2-field-key');
+        if (!k || pc[k] !== undefined) continue;
+        const ve = rows[r].querySelector('.s2-widget-value');
+        let t = '';
+        if (k === 'rfbsCommission' && ve) {
+          // rFBS 佣金是三档标签（12% / 14% / 20%），直接拼会变成假数字，用 / 连接
+          const bands = ve.querySelectorAll('.s2-widget-rfbs-band');
+          if (bands.length) {
+            const parts = [];
+            for (let b = 0; b < bands.length; b++) parts.push(txt(bands[b].innerText || bands[b].textContent));
+            t = parts.join('/');
+          }
+        }
+        if (!t) t = ve ? (ve.innerText || ve.textContent) : (rows[r].innerText || rows[r].textContent || '');
+        t = txt(t);
+        if (!t) continue;
+        const n = t.indexOf('/') < 0 ? num(t.replace(/[%\s\u00a0,]/g, '')) : null;
+        pc[k] = n !== null ? n : t;
+      }
+      if (Object.keys(pc).length) item.pluginCard = pc;
+    } catch (e) { /* 没装插件就跳过 */ }
+
+    items.push(item);
   }
   return items;
 }

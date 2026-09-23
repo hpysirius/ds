@@ -25,6 +25,11 @@ function normalizeApi(v) {
   return s;
 }
 
+/** 是否本机地址（只有本机才受 Chrome LNA 限制、才需要中继；公网服务器直连即可） */
+function isLocalApi(api) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(api || '');
+}
+
 async function getApi() {
   const s = await chrome.storage.local.get(['apiBase']);
   return normalizeApi(s.apiBase);
@@ -75,7 +80,12 @@ async function ensureRelayTab() {
   if (tabs.length) return tabs[0];
   const api = await getApi();
   // 中继页 = 后端同主机的 3100 端口（ds 前端）
-  const relayBase = api.replace(/:3101\/?$/, ':3100');
+  let relayBase = 'http://localhost:3100';
+  try {
+    const u = new URL(api);
+    u.port = '3100';
+    relayBase = u.origin;
+  } catch (e) { /* 地址异常就用默认 */ }
   const tab = await chrome.tabs.create({ url: relayBase + '/', active: false });
   for (let i = 0; i < 20; i++) {
     await sleep(500);
@@ -102,8 +112,15 @@ function fakeResponse(r) {
  */
 async function safeFetch(url, opts) {
   try {
-    return await fetch(url, { ...opts, targetAddressSpace: 'local' });
+    // 注意：targetAddressSpace 只能对「确实是本地」的地址声明。
+    // 对公网服务器声明 'local' 会让 Chrome 判定地址空间不符 → 直接网络错误（Failed to fetch）。
+    const o = isLocalApi(url) ? { ...opts, targetAddressSpace: 'local' } : { ...opts };
+    return await fetch(url, o);
   } catch (e) {
+    // 公网服务器不受 LNA 管，本地中继也帮不上忙 —— 直接抛出，别浪费时间开中继页
+    if (!isLocalApi(url)) {
+      throw new Error(`连不上服务器（${String((e && e.message) || e).slice(0, 80)}）——检查：服务器是否在线 / 地址末尾是否带 /api / 服务器防火墙是否放行`);
+    }
     // 大概率是 LNA 拦截 → 走中继（本地→本地，Chrome 豁免）
     const tab = await ensureRelayTab();
     const [res] = await chrome.scripting.executeScript({
@@ -357,14 +374,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             if (res.ok) {
               try { remaining = (await res.json()).remaining; } catch (e) { /* ignore */ }
             } else if (res.status === 404) {
-              // 能收到 404 说明网络是通的，只是地址不对 —— 最常见的就是把前端(3100)当成了后端(3101)
-              err = `地址能连通但没有插件接口（404）——3100 是前端页面，请改填后端 ${api.replace(/:3100$/, ':3101')}`;
+              // 能收到 404 说明网络是通的，只是地址不对：本地常把前端(3100)当后端，服务器常漏写 /api
+              if (isLocalApi(api)) {
+                err = `能连通但没有插件接口（404）——3100 是前端页面，请改填后端 ${api.replace(/:3100$/, ':3101')}`;
+              } else if (/\/api$/i.test(api)) {
+                err = '能连通但没有插件接口（404）——服务器上的插件接口未部署，请在服务器拉取最新代码并重启后端';
+              } else {
+                err = `能连通但没有插件接口（404）——服务器部署请在末尾加 /api，试试 ${api}/api`;
+              }
             } else {
               err = `HTTP ${res.status}`;
             }
             sendResponse({ ok: res.ok, api, status: res.status, remaining, error: err });
           } catch (e) {
-            sendResponse({ ok: false, api, error: NET_ERR });
+            // 保留 safeFetch 抛出的具体原因（本地/远程提示不同），不要笼统覆盖成 NET_ERR
+            sendResponse({ ok: false, api, error: (e && e.message) || NET_ERR });
           }
           break;
         }

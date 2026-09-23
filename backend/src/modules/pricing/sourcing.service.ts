@@ -110,6 +110,13 @@ const PAGE_STATE_JS = `(function(){
 const BAD_TITLE_RE = /antibot|нет соединени|доступ ограничен|access denied|拒绝连接|无法访问此网站/i;
 
 /**
+ * 第三方选品插件（中卖搏通ERP 等）注入到 Ozon 页面的浮层文本。
+ * 它的 widget 会插进商品卡片 DOM 里，插件采集时可能被当成标题整段抓走
+ * （实测商品名叫「中卖搏通ERP选品标签：类目：---rFBS佣金：…」）—— 这种标题绝不入库。
+ */
+const WIDGET_TITLE_RE = /中卖搏通ERP|中实跨境ERP|选品标签[:：]/;
+
+/**
  * 「还缺关键字段」的筛选条件：类目 / 主图 / 价格 任一为空。
  * 注意 reviewsCount 是 `Int @default(0)` 非空字段 —— 用 `{ reviewsCount: null }` 过滤会直接
  * 报 Prisma 错（Argument reviewsCount is missing），所以绝不能放进这里（踩过，批量接口 500）。
@@ -196,6 +203,82 @@ const isRealImg = (u: any): boolean => {
   if (/chrome-extension:|^data:|^blob:/i.test(v)) return false;
   return /(ozonstatic|ozone\.ru|ozon\.ru|alicdn|1688\.com)/i.test(v);
 };
+
+/**
+ * 把选品插件渲染的商品卡字段映射到 Product 列。
+ * 浏览器抓取（persistProbe）和插件列表上报（ingestProductList）共用，保证两边口径一致。
+ * 没有对应数据库列的字段（rfbsCommission / promoRevenueShare / offers 等）不丢：
+ * 调用方会把整个 pluginCard 存进 raw JSON，需要时可查。
+ */
+function applyPluginCard(data: any, card: any): void {
+  const c: any = card || {};
+  const set = (k: string, v: any) => { if (v !== null && v !== undefined && v !== '') data[k] = v; };
+  const setNum = (k: string, v: any) => {
+    const n = toNum(v);
+    if (n !== null) set(k, n);
+  };
+  setNum('soldCount', c.soldCount);
+  setNum('soldSum', c.soldSum);
+  setNum('drr', c.drr);
+  setNum('daysWithTrafarets', c.daysWithTrafarets);
+  setNum('daysInPromo', c.daysInPromo);
+  setNum('discount', c.discount);
+  setNum('convToCartPdp', c.convToCartPdp);
+  setNum('convToCartSearch', c.convToCartSearch);
+  // 插件的「退货取消率」→ 我们的 cancelRate
+  setNum('cancelRate', c.redemptionRate);
+  set('salesSchema', toStr(c.salesSchema));
+  set('brand', toStr(c.brand));
+  set('categoryPath', toStr(c.category));
+  // 末级类目：插件的 category 是 "住宅和花园/新年装饰" 两段式路径
+  if (c.category && String(c.category).indexOf('/') >= 0) {
+    const segs = String(c.category).split('/').map((s: string) => s.trim()).filter(Boolean);
+    if (segs.length) set('category3Name', segs[segs.length - 1]);
+  }
+  /*
+   * 上架时间：插件可能给天数（"120"），也可能给日期（"2025-06-18" / "18.06.2025"）。
+   * 必须先判日期再判数字 —— 否则 "2025-06-18" 会被 parseFloat 读成 2025，
+   * 直接把「上架天」写成 2025 天（实测踩过）。
+   */
+  const cd = c.createDate;
+  if (cd !== null && cd !== undefined && cd !== '') {
+    const s = String(cd);
+    const dateLike = /\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[-./]\d{1,2}[-./]\d{4}/.test(s);
+    if (dateLike) {
+      const norm = s.replace(/(\d{1,2})[.](\d{1,2})[.](\d{4})/, '$3-$2-$1').replace(/\//g, '-');
+      const d = new Date(norm);
+      if (!Number.isNaN(d.getTime())) {
+        set('createDays', Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000)));
+      }
+    } else {
+      const n = toNum(cd);
+      if (n !== null) set('createDays', n);
+    }
+  }
+  // 长宽高："201 x 201 x 201mm"（兼容 × / * 分隔）
+  if (c.volume) {
+    const m = String(c.volume).match(/(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)/i);
+    if (m) {
+      const dims = [m[1], m[2], m[3]].map((x) => Math.round(parseFloat(x)));
+      if (dims.length === 3 && dims.every((n) => n > 0 && n <= 200000)) {
+        set('sizeLengthMm', dims[0]);
+        set('sizeWidthMm', dims[1]);
+        set('sizeHeightMm', dims[2]);
+      }
+    }
+  }
+  // 重量："50g" / "1.2kg"（兼容俄文 кг/г）
+  if (c.weight) {
+    const wm = String(c.weight).match(/(\d+(?:[.,]\d+)?)\s*(kg|кг|g|г)?/i);
+    if (wm) {
+      let w = parseFloat(wm[1].replace(',', '.'));
+      if (!Number.isNaN(w) && w > 0) {
+        if (/kg|кг/i.test(wm[2] || '')) w *= 1000;
+        set('sizeWeightG', Math.round(w));
+      }
+    }
+  }
+}
 
 /** 1688 搜索用的分类路径片段（实测这个 slug 与关键词无关，仅作入口） */
 const SEARCH_PATH = '-6BE2.html';
@@ -1304,7 +1387,9 @@ export class SourcingService {
 
     const data: any = {};
     const set = (k: string, v: any) => { if (v !== null && v !== undefined && v !== '') data[k] = v; };
-    set('title', toStr(best.title));
+    // 第三方插件的浮层文本若混进标题（WIDGET_TITLE_RE），直接丢弃，不覆盖库里已有的真标题
+    const safeTitle = toStr(best.title);
+    if (safeTitle && !WIDGET_TITLE_RE.test(safeTitle)) set('title', safeTitle);
     set('brand', toStr(best.brand));
     set('categoryPath', toStr(best.categoryPath));
     set('price', toNum(best.price));
@@ -1318,45 +1403,9 @@ export class SourcingService {
     /*
      * 插件商品卡的字段（有就写，没有就完全不动原有值）。
      * 这些是公开页面上根本没有、只有登录 Ozon 卖家账号后插件才拿得到的经营指标。
-     * 注意 redemptionRate 是插件的「退货取消率」→ 我们的 cancelRate。
+     * 字段映射抽成了 applyPluginCard()，和插件列表上报（ingestProductList）共用。
      */
-    const c: any = best.pluginCard || {};
-    const setNum = (k: string, v: any) => {
-      const n = toNum(v);
-      if (n !== null) set(k, n);
-    };
-    setNum('soldCount', c.soldCount);
-    setNum('soldSum', c.soldSum);
-    setNum('drr', c.drr);
-    setNum('daysWithTrafarets', c.daysWithTrafarets);
-    setNum('daysInPromo', c.daysInPromo);
-    setNum('discount', c.discount);
-    setNum('convToCartPdp', c.convToCartPdp);
-    setNum('convToCartSearch', c.convToCartSearch);
-    setNum('cancelRate', c.redemptionRate);
-    set('salesSchema', toStr(c.salesSchema));
-    set('brand', toStr(c.brand));
-    set('categoryPath', toStr(c.category));
-    /*
-     * 上架时间：插件可能给天数（"120"），也可能给日期（"2025-06-18" / "18.06.2025"）。
-     * 必须先判日期再判数字 —— 否则 "2025-06-18" 会被 parseFloat 读成 2025，
-     * 直接把「上架天」写成 2025 天（实测踩到过）。
-     */
-    const cd = c.createDate;
-    if (cd !== null && cd !== undefined && cd !== '') {
-      const s = String(cd);
-      const dateLike = /\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[-./]\d{1,2}[-./]\d{4}/.test(s);
-      if (dateLike) {
-        const norm = s.replace(/(\d{1,2})[.](\d{1,2})[.](\d{4})/, '$3-$2-$1').replace(/\//g, '-');
-        const d = new Date(norm);
-        if (!Number.isNaN(d.getTime())) {
-          set('createDays', Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000)));
-        }
-      } else {
-        const n = toNum(cd);
-        if (n !== null) set('createDays', n);
-      }
-    }
+    applyPluginCard(data, best.pluginCard);
 
     data.raw = best;
     data.lastSeenAt = new Date();
@@ -1467,8 +1516,8 @@ export class SourcingService {
         data[k] = max ? String(v).slice(0, max) : v;
       };
       const title = toStr(it.title);
-      // 反爬/错误页的标题不入库
-      if (title && !BAD_TITLE_RE.test(title)) put('title', title, 490);
+      // 反爬/错误页标题、第三方插件浮层文本，都不当标题入库
+      if (title && !BAD_TITLE_RE.test(title) && !WIDGET_TITLE_RE.test(title)) put('title', title, 490);
       const p = toNum(it.price);
       if (p !== null) data.price = p;
       const img = toStr(it.imageUrl);
@@ -1478,8 +1527,14 @@ export class SourcingService {
       if (rt !== null) data.rating = rt;
       const rc = toNum(it.reviewsCount);
       if (rc !== null) data.reviewsCount = rc;
+      // 列表页卡片上也挂着选品插件的浮层（月销/佣金/类目等），有就一并映射入库
+      if (it.pluginCard && typeof it.pluginCard === 'object') {
+        applyPluginCard(data, it.pluginCard);
+        data.raw = { from: 'list', sourceUrl, pluginCard: it.pluginCard };
+      } else if (sourceUrl) {
+        data.raw = { from: 'list', sourceUrl };
+      }
       data.lastSeenAt = new Date();
-      if (sourceUrl) data.raw = { from: 'list', sourceUrl };
 
       const exist = await this.prisma.product.findUnique({ where: { sku }, select: { id: true } });
       if (exist) {
