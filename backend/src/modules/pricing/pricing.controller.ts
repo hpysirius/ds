@@ -215,6 +215,32 @@ export class PricingController {
     return this.sourcingService.enrichProductInfo(dto.sku || '');
   }
 
+  /**
+   * ── Chrome 插件通道 ──
+   * 插件跑在用户**自己的正常 Chrome** 里抓 Ozon 数据（不被风控、速度快），
+   * 再把结果 POST 回这里落库。接口 @Public，且 main.ts 已放行 chrome-extension:// 前缀。
+   */
+  @Public()
+  @Get('extension/pending')
+  @ApiOperation({ summary: '插件拉取待采集清单（缺类目/主图/价格的商品）' })
+  extensionPending(@Query('limit') limit?: string) {
+    return this.sourcingService.extensionPending(Number(limit) || 20);
+  }
+
+  @Public()
+  @Post('extension/product-info')
+  @ApiOperation({ summary: '插件上报一条商品数据（字段与浏览器抓取一致）' })
+  extensionIngest(@Body() dto: any) {
+    return this.sourcingService.ingestFromExtension(dto);
+  }
+
+  @Public()
+  @Post('extension/products')
+  @ApiOperation({ summary: '插件从列表页批量上报商品（新商品自动入库）' })
+  extensionIngestList(@Body() dto: any) {
+    return this.sourcingService.ingestProductList(dto);
+  }
+
   @Public()
   @Post('sourcing/offer')
   @ApiOperation({ summary: '抓 1688 货品详情：价格 + 包装信息（长宽高/重量）' })

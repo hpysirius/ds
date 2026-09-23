@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #1f2328;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --primary: #2563eb;
+        --ok: #16a34a;
+        --warn: #d97706;
+        --err: #dc2626;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        width: 340px;
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+      }
+      .wrap { padding: 12px 14px 14px; }
+      h1 { font-size: 14px; margin: 0 0 2px; }
+      .sub { color: var(--muted); font-size: 11px; margin-bottom: 10px; }
+      .row { display: flex; gap: 6px; margin-bottom: 8px; }
+      input[type="text"], input[type="number"] {
+        flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line);
+        border-radius: 6px; font-size: 12px; outline: none;
+      }
+      input:focus { border-color: var(--primary); }
+      button {
+        padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px;
+        background: #fff; cursor: pointer; font-size: 12px; white-space: nowrap;
+      }
+      button:hover { background: #f3f4f6; }
+      button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+      button.primary:hover { background: #1d4ed8; }
+      button.danger { color: var(--err); }
+      button:disabled { opacity: .5; cursor: not-allowed; }
+      .status {
+        border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+        font-size: 11px; color: var(--muted); background: #fafafa; margin-bottom: 8px;
+      }
+      .status b { color: var(--fg); }
+      .progress { height: 5px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 6px 0 8px; }
+      .progress > i { display: block; height: 100%; width: 0; background: var(--primary); transition: width .3s; }
+      .logs {
+        max-height: 190px; overflow: auto; border: 1px solid var(--line); border-radius: 6px;
+        padding: 6px 8px; font-size: 11px; background: #fafafa;
+      }
+      .logs div { padding: 2px 0; border-bottom: 1px dashed #eee; word-break: break-all; }
+      .logs div:last-child { border-bottom: 0; }
+      .hint { color: var(--muted); font-size: 11px; margin-top: 8px; }
+      .dot { display: inline-block; width: 7px; height: 7px; border-radius: 99px; background: var(--muted); margin-right: 5px; }
+      .dot.on { background: var(--ok); }
+      .dot.off { background: var(--err); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>DS Ozon 采集助手</h1>
+      <div class="sub">跑在<b>正常浏览器</b>里采集，不走调试模式 · 不受反爬挑战</div>
+
+      <div class="row">
+        <input id="api" type="text" placeholder="后端地址 http://localhost:3101" />
+        <button id="saveApi">保存</button>
+      </div>
+
+      <div class="status">
+        <div><span id="dot" class="dot"></span><span id="apiState">检测中…</span></div>
+        <div style="margin-top:4px">待补商品：<b id="remaining">-</b></div>
+      </div>
+
+      <div class="row">
+        <button id="collect" style="flex:1">采集当前商品页</button>
+      </div>
+
+      <div class="row">
+        <button id="collectList" class="primary" style="flex:1">采集当前列表页</button>
+        <input id="scrolls" type="number" value="3" min="0" max="30" title="往下滚几屏（每屏约 36 个商品）" style="max-width:56px" />
+      </div>
+
+      <div class="row">
+        <input id="limit" type="number" value="20" min="1" max="200" style="max-width:74px" />
+        <button id="batch" style="flex:1">补详情(批量)</button>
+        <button id="stop" class="danger">停止</button>
+      </div>
+
+      <div class="progress"><i id="bar"></i></div>
+
+      <div class="logs" id="logs"><div>（暂无日志）</div></div>
+
+      <div class="hint">
+        <b>采集当前列表页</b>：在 highlight/搜索/类目页上用，抓整页商品并往下滚几屏（右侧数字），新商品自动入库<br />
+        <b>补详情(批量)</b>：给库里缺类目/主图/价格的商品逐条补详情页信息
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

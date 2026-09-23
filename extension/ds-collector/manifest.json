@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "DS Ozon 采集助手",
+  "version": "1.1.0",
+  "description": "在正常的 Chrome 里采集 Ozon 商品数据（标题/价格/主图/类目/评论等），并上报到 ds 选品系统。不依赖调试模式，不受 Ozon 反爬挑战影响。",
+  "permissions": ["storage", "tabs", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://www.ozon.ru/*",
+    "https://*.ozon.ru/*",
+    "http://localhost:3101/*",
+    "http://127.0.0.1:3101/*",
+    "http://localhost:3100/*",
+    "http://127.0.0.1:3100/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "DS 采集助手"
+  }
+}

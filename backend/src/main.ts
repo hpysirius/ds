@@ -21,7 +21,31 @@ async function bootstrap() {
   const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3100')
     .split(',')
     .map((s) => s.trim());
-  app.enableCors({ origin: allowedOrigins, credentials: true });
+  /*
+   * Chrome 的「Private Network Access」(PNA)：扩展（chrome-extension:// 源）请求 localhost 属于
+   * 访问私有网络，除普通 CORS 头外还要求服务端返回 `Access-Control-Allow-Private-Network: true`，
+   * 否则浏览器直接按网络失败处理 —— 现象就是插件里一堆 "Failed to fetch"（而 curl 完全正常）。
+   * 必须放在 enableCors 之前，这样预检(OPTIONS)响应里也带上。
+   */
+  app.use((_req: any, res: any, next: any) => {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    next();
+  });
+
+  /*
+   * CORS：除前端白名单外，还要放行 chrome-extension:// —— 「DS 采集助手」插件运行在用户
+   * 自己的正常 Chrome 里（origin 是 chrome-extension://<id>，重装后 id 会变，
+   * 所以按前缀放行而不是写死某个 id）。插件只走 /pricing/extension/* 这几个 @Public 接口。
+   */
+  app.enableCors({
+    origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
+      if (!origin) return cb(null, true); // curl / 服务端直调没有 origin
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      if (origin.startsWith('chrome-extension://')) return cb(null, true);
+      cb(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  });
 
   app.useGlobalFilters(new AllExceptionsFilter());
 

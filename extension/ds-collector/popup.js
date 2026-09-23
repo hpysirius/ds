@@ -1,0 +1,99 @@
+/** 弹窗交互：状态显示 + 触发采集 */
+const $ = (id) => document.getElementById(id);
+
+async function send(msg) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(msg, (r) => resolve(r || { ok: false, error: '无响应' }));
+  });
+}
+
+async function refresh() {
+  const r = await send({ type: 'DS_STATUS' });
+  const st = (r.state || {});
+  // 正在输入时绝不覆盖输入框的值 —— 否则每 2s 的状态刷新会把用户打到一半的地址冲掉
+  if (document.activeElement !== $('api')) {
+    $('api').value = r.api || '';
+  }
+  const total = st.total || 0;
+  const done = st.done || 0;
+  $('bar').style.width = total ? `${Math.round((done / total) * 100)}%` : '0';
+
+  const logs = st.logs || [];
+  $('logs').innerHTML = logs.length
+    ? logs.map((l) => `<div>${escapeHtml(l)}</div>`).join('')
+    : '<div>（暂无日志）</div>';
+
+  $('batch').disabled = !!st.running;
+  $('stop').disabled = !st.running;
+  $('batch').textContent = st.running ? `补详情中 ${done}/${total}` : '补详情(批量)';
+
+  // 后端连通性 + 待补数量（统一走 background，popup 自己不再直接 fetch）
+  const p = await send({ type: 'DS_PING' });
+  $('dot').className = `dot ${p.ok ? 'on' : 'off'}`;
+  if (p.ok) {
+    $('apiState').textContent = `已连接 ${p.api}`;
+    $('remaining').textContent = p.remaining != null ? p.remaining : '-';
+  } else {
+    $('apiState').textContent = `连不上后端（${p.error || 'HTTP ' + p.status}）`;
+    $('remaining').textContent = '-';
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+let timer = null;
+
+$('saveApi').onclick = async () => {
+  const btn = $('saveApi');
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  await send({ type: 'DS_SET_API', api: $('api').value.trim() });
+  // 主动失焦，让下一次状态刷新能同步显示最新地址
+  $('api').blur();
+  await refresh();
+  btn.disabled = false;
+  btn.textContent = '已保存 ✓';
+  setTimeout(() => { btn.textContent = '保存'; }, 1500);
+};
+
+$('collect').onclick = async () => {
+  $('collect').disabled = true;
+  $('collect').textContent = '采集中…';
+  const r = await send({ type: 'DS_COLLECT_CURRENT' });
+  $('collect').disabled = false;
+  $('collect').textContent = '采集当前商品页';
+  if (!r.ok) alert(r.error || '采集失败');
+  await refresh();
+};
+
+$('collectList').onclick = async () => {
+  const btn = $('collectList');
+  btn.disabled = true;
+  btn.textContent = '抓取中…';
+  const r = await send({ type: 'DS_COLLECT_LIST', scrolls: Number($('scrolls').value) || 0 });
+  btn.disabled = false;
+  btn.textContent = '采集当前列表页';
+  if (!r.ok) alert(r.error || '采集失败');
+  else if (r.result) {
+    const x = r.result;
+    alert(`抓到 ${x.total} 个商品\n新建 ${x.created} 个\n更新 ${x.updated} 个`);
+  }
+  await refresh();
+};
+
+$('batch').onclick = async () => {
+  await send({ type: 'DS_START_BATCH', limit: Number($('limit').value) || 20 });
+  timer = setInterval(refresh, 1500);
+  await refresh();
+};
+
+$('stop').onclick = async () => {
+  await send({ type: 'DS_STOP' });
+  clearInterval(timer);
+  await refresh();
+};
+
+refresh();
+timer = setInterval(refresh, 2000);

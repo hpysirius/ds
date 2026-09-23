@@ -109,6 +109,15 @@ const PAGE_STATE_JS = `(function(){
 /** 挑战/错误页的标题特征 —— 写库前的最后一道闸，绝不把这种垃圾当商品标题存进去 */
 const BAD_TITLE_RE = /antibot|нет соединени|доступ ограничен|access denied|拒绝连接|无法访问此网站/i;
 
+/**
+ * 「还缺关键字段」的筛选条件：类目 / 主图 / 价格 任一为空。
+ * 注意 reviewsCount 是 `Int @default(0)` 非空字段 —— 用 `{ reviewsCount: null }` 过滤会直接
+ * 报 Prisma 错（Argument reviewsCount is missing），所以绝不能放进这里（踩过，批量接口 500）。
+ */
+const MISSING_FIELDS_WHERE = {
+  OR: [{ categoryPath: null }, { imageUrl: null }, { price: null }],
+};
+
 const WAIT_READY_JS = `(function(){
   try{
     if(document.querySelector('[data-widget*="bread"] a')) return true;
@@ -1274,6 +1283,25 @@ export class SourcingService {
       }
     }
 
+    /*
+     * 落库逻辑抽出来：浏览器抓取（enrichProductInfo）和 Chrome 插件上报（ingestFromExtension）
+     * 走的是同一套字段映射，避免两边各写一份、改一处漏一处。
+     */
+    const r = await this.persistProbe(sku, best);
+    return { sku, ...r };
+  }
+
+  /**
+   * 把「采集到的原始 payload」落库（公开字段 + 插件经营指标）。
+   * 供浏览器抓取和插件上报共用。
+   */
+  private async persistProbe(
+    sku: string,
+    best: any,
+  ): Promise<{ ok: boolean; fields: string[]; reason?: string }> {
+    const product = await this.prisma.product.findUnique({ where: { sku } });
+    if (!product) return { ok: false, fields: [], reason: '商品不存在' };
+
     const data: any = {};
     const set = (k: string, v: any) => { if (v !== null && v !== undefined && v !== '') data[k] = v; };
     set('title', toStr(best.title));
@@ -1334,7 +1362,7 @@ export class SourcingService {
     data.lastSeenAt = new Date();
 
     if (Object.keys(data).length <= 2) {
-      return { sku, ok: false, fields: [], reason: 'Ozon 详情页未提供任何可补充的字段' };
+      return { ok: false, fields: [], reason: 'Ozon 详情页未提供任何可补充的字段' };
     }
     await this.prisma.product.update({ where: { sku }, data });
     // 只有真读到指标才落一条记录，避免每次都插一条空行
@@ -1361,11 +1389,113 @@ export class SourcingService {
       });
     }
     const fields = Object.keys(data).filter((k) => k !== 'raw' && k !== 'lastSeenAt');
-    return { sku, ok: true, fields };
+    return { ok: true, fields };
+  }
+
+  /**
+   * ── Chrome 插件通道 ────────────────────────────────────────────────
+   *
+   * 为什么要有这条路：带调试端口的 Chrome 被 Ozon 风控标记，每次导航都要先过一张
+   * 「Antibot Challenge Page」（~15s），慢得没法用。而用户自己的正常 Chrome 不受影响。
+   * 所以让「DS 采集助手」插件跑在**正常浏览器**里抓数据，再 POST 回后端落库 —— 快、稳、不被拦。
+   */
+
+  /** 插件拉取待采集清单（缺类目/主图/价格的商品） */
+  async extensionPending(limit = 20) {
+    const rows = await this.prisma.product.findMany({
+      where: MISSING_FIELDS_WHERE,
+      orderBy: { id: 'desc' },
+      take: Math.max(1, Math.min(limit || 20, 200)),
+      select: { sku: true, productUrl: true },
+    });
+    return {
+      items: rows.map((r) => ({
+        sku: r.sku,
+        url: r.productUrl || `https://www.ozon.ru/product/${r.sku}/`,
+      })),
+      remaining: await this.prisma.product.count({ where: MISSING_FIELDS_WHERE }),
+    };
+  }
+
+  /** 插件上报一条商品数据（字段与浏览器抓取完全一致） */
+  async ingestFromExtension(dto: any) {
+    // 先按 dto.sku，没有就从 URL 里兜出 sku（/product/xxx-1234567890/）
+    let sku = String(dto?.sku || '').trim();
+    if (!sku && dto?.url) {
+      const m = String(dto.url).match(/\/product\/[^/]*?(\d{6,})/);
+      if (m) sku = m[1];
+    }
+    if (!sku) throw new BadRequestException('缺少 sku（或无法从 url 中解析出 sku）');
+
+    const best: any = { ...dto };
+    // 插件可能把「中实ERP」插件渲染的卡片字段一起带上来（月销/加购率/退货率等）
+    best.pluginCard = dto?.pluginCard || undefined;
+
+    // 反爬/错误页的标题不入库
+    if (best.title && BAD_TITLE_RE.test(String(best.title))) {
+      delete best.title;
+      if (!best.price && !best.imageUrl && !best.categoryPath) {
+        return { sku, ok: false, fields: [], reason: 'Ozon 返回的是反爬/错误页，未写入任何数据' };
+      }
+    }
+
+    const r = await this.persistProbe(sku, best);
+    return { sku, ...r };
+  }
+
+  /**
+   * 插件从**列表页**批量上报商品（/highlight/…、/search/…、类目页等）。
+   *
+   * 和详情页上报的区别：列表页是「发现新商品」的入口，库里没有的要**新建**（upsert），
+   * 不能只更新已有的。列表页能拿到的是 sku / 标题 / 价格 / 主图 / 链接 / 评分评论，
+   * 类目、卖家这些还得靠详情页补 —— 所以这里只写拿得到的字段，绝不把已有值覆盖成空。
+   */
+  async ingestProductList(dto: any) {
+    const items = Array.isArray(dto?.items) ? dto.items : [];
+    const sourceUrl = dto?.sourceUrl ? String(dto.sourceUrl).slice(0, 990) : null;
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    for (const it of items) {
+      const sku = String(it?.sku || '').trim();
+      if (!sku) { skipped++; continue; }
+
+      const data: any = {};
+      const put = (k: string, v: any, max?: number) => {
+        if (v === null || v === undefined || v === '') return;
+        data[k] = max ? String(v).slice(0, max) : v;
+      };
+      const title = toStr(it.title);
+      // 反爬/错误页的标题不入库
+      if (title && !BAD_TITLE_RE.test(title)) put('title', title, 490);
+      const p = toNum(it.price);
+      if (p !== null) data.price = p;
+      const img = toStr(it.imageUrl);
+      if (img && isRealImg(img)) put('imageUrl', img, 990);
+      put('productUrl', toStr(it.productUrl), 990);
+      const rt = toNum(it.rating);
+      if (rt !== null) data.rating = rt;
+      const rc = toNum(it.reviewsCount);
+      if (rc !== null) data.reviewsCount = rc;
+      data.lastSeenAt = new Date();
+      if (sourceUrl) data.raw = { from: 'list', sourceUrl };
+
+      const exist = await this.prisma.product.findUnique({ where: { sku }, select: { id: true } });
+      if (exist) {
+        await this.prisma.product.update({ where: { sku }, data });
+        updated++;
+      } else {
+        await this.prisma.product.create({ data: { sku, ...data } });
+        created++;
+      }
+    }
+    return { total: items.length, created, updated, skipped };
   }
 
   /**
    * 批量补商品信息：挑出还缺关键字段的商品，逐条打开详情页补齐。
+   * 与补图一样限流分批 + 关掉多余商品标签，避免渲染进程被打满。
    * 与补图一样限流分批 + 关掉多余商品标签，避免渲染进程被打满。
    *
    * 注意：这里只挑「公开页面能补的字段」（品牌/类目/主图/评分/评论/价格），
@@ -1379,15 +1509,8 @@ export class SourcingService {
      * （实测这类商品 JSON-LD 里 brand 是空串、正文写着「Нет отзывов」），
      * 若拿它们做筛选，这批商品会被反复挑中、永远补不完。它们只做「顺带补」：有就写，没有就跳过。
      */
-    const missingWhere = {
-      OR: [
-        { categoryPath: null },
-        { imageUrl: null },
-        { price: null },
-      ],
-    };
     const rows = await this.prisma.product.findMany({
-      where: missingWhere,
+      where: MISSING_FIELDS_WHERE,
       orderBy: { id: 'desc' },
       take: Math.max(0, Math.min(limit, 20)),
       select: { id: true, sku: true, productUrl: true },
@@ -1421,7 +1544,7 @@ export class SourcingService {
         if (failedDetail.length < 3) failedDetail.push({ sku: p.sku, reason: r.reason || '未补充' });
       }
     }
-    const remaining = await this.prisma.product.count({ where: missingWhere });
+    const remaining = await this.prisma.product.count({ where: MISSING_FIELDS_WHERE });
     return { enriched, failed, failedDetail, remaining };
   }
 
