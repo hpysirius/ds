@@ -72,6 +72,7 @@ model Product {
 
   imageUrl   String? @db.VarChar(1000)
   productUrl String? @db.VarChar(1000)
+  supplyUrl  String? @db.VarChar(1000) // 1688 货源链接（核价工作台保存时回写）
 
   rating       Decimal? @db.Decimal(3, 2)
   reviewsCount Int      @default(0)

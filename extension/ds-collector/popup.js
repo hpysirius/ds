@@ -73,13 +73,30 @@ async function usePreset(v) {
 $('useLocal').onclick = () => usePreset(PRESET_LOCAL);
 $('useServer').onclick = () => usePreset(PRESET_SERVER);
 
+// 采集规则管理页（新增/编辑/启停规则，采集时自动按规则打标签）
+$('rules').onclick = () => chrome.runtime.openOptionsPage();
+
 $('collect').onclick = async () => {
   $('collect').disabled = true;
   $('collect').textContent = '采集中…';
   const r = await send({ type: 'DS_COLLECT_CURRENT' });
   $('collect').disabled = false;
   $('collect').textContent = '采集当前商品页';
-  if (!r.ok) alert(r.error || '采集失败');
+  if (!r.ok) {
+    alert(r.error || '采集失败');
+  } else if (r.result) {
+    const x = r.result;
+    if (x.ok) {
+      const fields = x.fields || [];
+      alert(
+        `${x.created ? '✅ 已录入新商品' : '✅ 已更新商品'}：${x.sku}\n` +
+          `写入 ${fields.length} 个字段：${fields.join('、').slice(0, 160) || '（无）'}\n\n` +
+          `${fields.length ? '去商品库页面就能看到这条。' : '⚠️ 页面没读到可用字段，刷新页面后重试。'}`,
+      );
+    } else {
+      alert(`⚠️ 未写入：${x.reason || '无可用字段'}`);
+    }
+  }
   await refresh();
 };
 

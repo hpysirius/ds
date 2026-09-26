@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Param, ParseIntPipe, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ProductsService } from './products.service';
 import { QueryProductDto } from './dto/query-product.dto';
@@ -42,5 +42,17 @@ export class ProductsController {
   @ApiOperation({ summary: '删除商品' })
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.productsService.remove(id);
+  }
+
+  /**
+   * 批量删除。用 POST 而不是 DELETE：DELETE 带 body 容易被 nginx/代理丢掉。
+   *   { ids: [1,2,3] }  只删这几个
+   *   { filter: {...} } 按列表页当前筛选条件删（不传 ids 时生效）
+   */
+  @ApiBearerAuth()
+  @Post('bulk-delete')
+  @ApiOperation({ summary: '批量删除商品（按 id 或按筛选条件）' })
+  removeMany(@Body() dto: { ids?: number[]; filter?: any }) {
+    return this.productsService.removeMany(dto || {});
   }
 }

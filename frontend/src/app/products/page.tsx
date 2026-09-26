@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Button, Card, Col, Empty, Form, Input, InputNumber, Row, Select, Space, Table, Tag, Tooltip, message } from 'antd';
-import { CalculatorOutlined, DownloadOutlined, PictureOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Card, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Table, Tag, Tooltip, message } from 'antd';
+import { CalculatorOutlined, DeleteOutlined, DownloadOutlined, PictureOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { API_BASE, http } from '@/lib/api';
 
@@ -26,6 +26,86 @@ export default function ProductsPage() {
   const [filling, setFilling] = useState(false);
   /** 单条补图时记录哪个 sku 在抓（按钮转 loading） */
   const [fillingSku, setFillingSku] = useState<string | null>(null);
+
+  /** 勾选要批量删除的行（存的是商品 id） */
+  const [selected, setSelected] = useState<number[]>([]);
+  const [deleting, setDeleting] = useState(false);
+
+  /** 删除失败时给出人话提示（未登录要单独说，否则只看到一句 Unauthorized） */
+  const delError = (e: any, what: string) => {
+    const status = e?.response?.status;
+    message.error(status === 401 ? `${what}失败：请先登录（右上角登录）再操作` : `${what}失败：${e.message}`);
+  };
+
+  /** 删除单个商品 */
+  const deleteOne = async (r: any) => {
+    try {
+      await http.delete(`/products/${r.id}`);
+      message.success(`已删除 ${r.sku}`);
+      setSelected((s) => s.filter((x) => x !== r.id));
+      await load();
+    } catch (e: any) {
+      delError(e, '删除');
+    }
+  };
+
+  /** 批量删除勾选的商品 */
+  const deleteSelected = async () => {
+    if (!selected.length) return;
+    Modal.confirm({
+      title: `删除所选 ${selected.length} 个商品？`,
+      content: '删除后不可恢复（商品记录及其指标历史会一起清掉）。',
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setDeleting(true);
+        try {
+          const { data } = await http.post('/products/bulk-delete', { ids: selected });
+          message.success(`已删除 ${data.deleted} 个商品`);
+          setSelected([]);
+          await load(1);
+        } catch (e: any) {
+          delError(e, '批量删除');
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
+  };
+
+  /** 按当前筛选条件删除（"清空当前筛选结果"） */
+  const deleteByFilter = async () => {
+    const values = form.getFieldsValue();
+    const filter: any = { ...values };
+    Object.keys(filter).forEach((k) => {
+      if (filter[k] === undefined || filter[k] === null || filter[k] === '') delete filter[k];
+    });
+    if (!Object.keys(filter).length) {
+      message.warning('请至少设置一个筛选条件，避免误删整个商品库');
+      return;
+    }
+    Modal.confirm({
+      title: `删除当前筛选结果的全部 ${total} 个商品？`,
+      content: `筛选条件：${JSON.stringify(filter)}（删除后不可恢复）`,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setDeleting(true);
+        try {
+          const { data } = await http.post('/products/bulk-delete', { filter });
+          message.success(`已删除 ${data.deleted} 个商品`);
+          setSelected([]);
+          await load(1);
+        } catch (e: any) {
+          delError(e, '删除');
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
+  };
 
   /** 补商品信息：打开 Ozon 详情页，补齐品牌/类目/月销/加购率/退货率/广告占比/上架天/发货/评论/主图等（限流分批） */
   const fillInfo = async () => {
@@ -197,12 +277,25 @@ export default function ProductsPage() {
         title={`共 ${total} 条`}
         size="small"
         extra={
-          <Space>
+          <Space wrap>
             <Button size="small" icon={<PictureOutlined />} loading={filling} onClick={fillInfo}>
               补商品信息
             </Button>
             <Button size="small" icon={<DownloadOutlined />} onClick={exportCsv} disabled={!list.length}>
               导出当前页
+            </Button>
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              disabled={!selected.length}
+              loading={deleting}
+              onClick={deleteSelected}
+            >
+              删除所选{selected.length ? `(${selected.length})` : ''}
+            </Button>
+            <Button size="small" danger disabled={!total || deleting} onClick={deleteByFilter}>
+              删除筛选结果({total})
             </Button>
           </Space>
         }
@@ -213,6 +306,10 @@ export default function ProductsPage() {
           loading={loading}
           dataSource={list}
           scroll={{ x: 1800 }}
+          rowSelection={{
+            selectedRowKeys: selected,
+            onChange: (keys) => setSelected(keys as number[]),
+          }}
           locale={{ emptyText: <Empty description="还没有商品，先去「数据采集」跑一轮" /> }}
           pagination={{
             current: page,
@@ -318,7 +415,7 @@ export default function ProductsPage() {
             {
               title: '操作',
               key: 'op',
-              width: 200,
+              width: 250,
               fixed: 'right',
               render: (_: any, r: any) => (
                 <Space size={4} wrap>
@@ -336,6 +433,18 @@ export default function ProductsPage() {
                   >
                     补信息
                   </Button>
+                  <Popconfirm
+                    title={`删除「${r.sku}」？`}
+                    description="删除后不可恢复"
+                    okText="删除"
+                    okButtonProps={{ danger: true }}
+                    cancelText="取消"
+                    onConfirm={() => deleteOne(r)}
+                  >
+                    <Button type="link" size="small" danger>
+                      删除
+                    </Button>
+                  </Popconfirm>
                 </Space>
               ),
             },

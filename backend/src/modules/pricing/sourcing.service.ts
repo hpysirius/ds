@@ -7,6 +7,7 @@ import { CdpClient } from '../collect/lib/cdp.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   DESKTOP_UA,
+  OfferSku,
   SearchItem,
   cacheGet,
   cacheSet,
@@ -308,6 +309,10 @@ export interface OfferInfo {
   packSkuCount?: number; // 包装信息里有多少个 SKU（颜色）
   minOrderQuantity?: number | null; // 起订量
   companyName?: string | null;
+  /** 另需运费（freightInfo.totalCost，元）——前端把它加到采购成本上 */
+  freightYuan?: number | null;
+  /** 全部可选规格：名称/价格/重量/尺寸（规格名里的 17*7*3 会解析成尺寸） */
+  skus?: OfferSku[];
   source?: string; // http / browser
   warnings: string[];
 }
@@ -639,6 +644,8 @@ export class SourcingService {
       packSkuCount: d.packSkuCount,
       minOrderQuantity: d.minOrderQuantity,
       companyName: d.companyName,
+      freightYuan: d.freightYuan,
+      skus: d.skus,
       source: 'http',
       warnings: d.warnings,
     };
@@ -1381,9 +1388,21 @@ export class SourcingService {
   private async persistProbe(
     sku: string,
     best: any,
-  ): Promise<{ ok: boolean; fields: string[]; reason?: string }> {
-    const product = await this.prisma.product.findUnique({ where: { sku } });
-    if (!product) return { ok: false, fields: [], reason: '商品不存在' };
+    opts?: { create?: boolean },
+  ): Promise<{ ok: boolean; fields: string[]; reason?: string; created?: boolean }> {
+    /*
+     * 插件在**商品详情页**手动点「采集当前商品页」时，这个商品往往还没进过库
+     * （它不是从列表页滚出来的），详情页本身就是"录入一条商品"的入口 —— 所以必须能**新建**。
+     * 浏览器自动补详情（enrichProductInfo）不传 create：批量任务里如果解析到脏页面，
+     * 宁可跳过也不要凭空插一条垃圾数据。
+     */
+    let product = await this.prisma.product.findUnique({ where: { sku } });
+    let created = false;
+    if (!product) {
+      if (!opts?.create) return { ok: false, fields: [], reason: '商品不存在' };
+      product = await this.prisma.product.create({ data: { sku } });
+      created = true;
+    }
 
     const data: any = {};
     const set = (k: string, v: any) => { if (v !== null && v !== undefined && v !== '') data[k] = v; };
@@ -1399,6 +1418,9 @@ export class SourcingService {
     set('rating', toNum(best.rating));
     set('reviewsCount', toNum(best.reviewsCount));
     set('salesSchema', toStr(best.salesSchema));
+    // 商品链接：详情页上报时这里是主要入口（后端 subsequent的「补详情」「跳转到 Ozon」都靠它）
+    const purl = toStr(best.productUrl || best.url);
+    if (purl && /^https?:\/\//i.test(purl)) set('productUrl', String(purl).slice(0, 990));
 
     /*
      * 插件商品卡的字段（有就写，没有就完全不动原有值）。
@@ -1411,7 +1433,13 @@ export class SourcingService {
     data.lastSeenAt = new Date();
 
     if (Object.keys(data).length <= 2) {
-      return { ok: false, fields: [], reason: 'Ozon 详情页未提供任何可补充的字段' };
+      // 新建出来的空壳要退回去，别在库里留一条只有 sku 的垃圾记录
+      if (created) await this.prisma.product.delete({ where: { sku } }).catch(() => undefined);
+      return {
+        ok: false,
+        fields: [],
+        reason: created ? '页面没读到任何可用字段，未录入' : 'Ozon 详情页未提供任何可补充的字段',
+      };
     }
     await this.prisma.product.update({ where: { sku }, data });
     // 只有真读到指标才落一条记录，避免每次都插一条空行
@@ -1438,7 +1466,7 @@ export class SourcingService {
       });
     }
     const fields = Object.keys(data).filter((k) => k !== 'raw' && k !== 'lastSeenAt');
-    return { ok: true, fields };
+    return { ok: true, fields, created };
   }
 
   /**
@@ -1488,7 +1516,11 @@ export class SourcingService {
       }
     }
 
-    const r = await this.persistProbe(sku, best);
+    /*
+     * 详情页采集允许**新建**：用户手动在某个商品页点「采集当前商品页」，
+     * 本来就是为了把这个商品录进系统 —— 库里没有这条时不应该被一句"商品不存在"打回。
+     */
+    const r = await this.persistProbe(sku, best, { create: true });
     return { sku, ...r };
   }
 
@@ -1527,12 +1559,23 @@ export class SourcingService {
       if (rt !== null) data.rating = rt;
       const rc = toNum(it.reviewsCount);
       if (rc !== null) data.reviewsCount = rc;
+      // 插件按用户配置的采集规则打的标签（[{name,color,priority,rule}]），随商品存进 raw.tags
+      const tags = Array.isArray(it?.tags)
+        ? it.tags
+            .filter((t: any) => t && t.name)
+            .map((t: any) => ({
+              name: String(t.name).slice(0, 6),
+              color: String(t.color || '').slice(0, 16),
+              priority: Number(t.priority) || 0,
+              rule: String(t.rule || '').slice(0, 15),
+            }))
+        : [];
       // 列表页卡片上也挂着选品插件的浮层（月销/佣金/类目等），有就一并映射入库
       if (it.pluginCard && typeof it.pluginCard === 'object') {
         applyPluginCard(data, it.pluginCard);
-        data.raw = { from: 'list', sourceUrl, pluginCard: it.pluginCard };
-      } else if (sourceUrl) {
-        data.raw = { from: 'list', sourceUrl };
+        data.raw = { from: 'list', sourceUrl, pluginCard: it.pluginCard, ...(tags.length ? { tags } : {}) };
+      } else if (sourceUrl || tags.length) {
+        data.raw = { from: 'list', sourceUrl, ...(tags.length ? { tags } : {}) };
       }
       data.lastSeenAt = new Date();
 
@@ -1676,16 +1719,46 @@ export class SourcingService {
        */
       const raw = await ev(`(() => {
         const html = document.documentElement.innerHTML;
-        const out = { prices: [], skus: [] };
+        const out = { prices: [], skus: [], totalCost: null };
 
         // 价格：优先 priceDisplay（主展示价），退而求其次用 "price"
         const grab = (re) => {
           const list = [...html.matchAll(re)].map((m) => parseFloat(m[1])).filter((n) => n > 0 && n < 1000000);
           return [...new Set(list)];
         };
-        let prices = grab(/"priceDisplay"\\s*:\\s*"([0-9]+(?:\\.[0-9]+)?)"/g);
+        let prices = grab(/"priceDisplay"\\s*:\\s*"([0-9]+(?:\\.[0-9]+)?)"(?:\\s*-\\s*"?([0-9]+(?:\\.[0-9]+)?)"?)?/g);
         if (!prices.length) prices = grab(/"price"\\s*:\\s*"?([0-9]+(?:\\.[0-9]+)?)"?/g);
         out.prices = prices.sort((a, b) => a - b);
+
+        // 另需运费（freightInfo.totalCost，元）
+        const fm = html.match(/"totalCost"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)/);
+        if (fm) out.totalCost = parseFloat(fm[1]);
+
+        // 规格列表 skuMap（名称/价格/库存）
+        const iSkuMap = html.indexOf('"skuMap"');
+        if (iSkuMap >= 0) {
+          const start = html.indexOf('[', iSkuMap);
+          if (start > 0) {
+            let depth = 0, end = -1, inStr = false, esc = false;
+            for (let i = start; i < html.length && i < start + 300000; i++) {
+              const c = html[i];
+              if (inStr) { if (esc) esc = false; else if (c === '\\\\') esc = true; else if (c === '"') inStr = false; continue; }
+              if (c === '"') inStr = true;
+              else if (c === '[') depth++;
+              else if (c === ']') { depth--; if (depth === 0) { end = i + 1; break; } }
+            }
+            if (end > 0) {
+              try {
+                out.skuMap = (JSON.parse(html.slice(start, end)) || []).map((s) => ({
+                  skuId: String(s.skuId ?? ''),
+                  name: String(s.specAttrs || s.skuName || '').trim(),
+                  price: s.discountPrice != null ? Number(s.discountPrice) : (s.price != null ? Number(s.price) : null),
+                  stock: s.canBookCount != null ? Number(s.canBookCount) : null,
+                })).filter((s) => s.name);
+              } catch (e) { /* ignore */ }
+            }
+          }
+        }
 
         // 包装信息：pieceWeightScaleInfo 数组（按括号配对切出完整数组再 JSON.parse）
         const key = 'pieceWeightScaleInfo';
@@ -1703,6 +1776,7 @@ export class SourcingService {
               try {
                 const arr = JSON.parse(html.slice(start, end));
                 out.skus = (Array.isArray(arr) ? arr : []).map((x) => ({
+                  skuId: String(x.skuId ?? ''),
                   name: x.sku1 || x.skuName || '',
                   length: Number(x.length) || null,
                   width: Number(x.width) || null,
@@ -1727,18 +1801,62 @@ export class SourcingService {
         info.price = parsed.prices[0];
         info.priceMax = parsed.prices[parsed.prices.length - 1];
       }
+      if (parsed?.totalCost != null) info.freightYuan = parsed.totalCost;
       const skuList: any[] = parsed?.skus || [];
-      const firstSku = skuList.find((s) => s.weight || (s.length && s.width && s.height)) || skuList[0];
+      const skuMapList: any[] = parsed?.skuMap || [];
+      const packBySkuId = new Map(skuList.filter((s) => s.skuId).map((s) => [s.skuId, s]));
+      // 规格名里的尺寸（17*7*3）比外箱尺寸更贴近计费重
+      for (const s of skuMapList) {
+        const m = String(s.name || '').match(/(\d+(?:\.\d+)?)\s*[*×xX]\s*(\d+(?:\.\d+)?)\s*[*×xX]\s*(\d+(?:\.\d+)?)/);
+        let dims: number[] | null = null;
+        if (m) {
+          dims = [parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])].sort((a, b) => b - a);
+          if (dims.some((n) => !(n > 0 && n <= 200))) dims = null;
+        }
+        const pack = packBySkuId.get(s.skuId);
+        info.skus = info.skus || [];
+        info.skus.push({
+          skuId: s.skuId,
+          name: s.name,
+          price: s.price ?? null,
+          weightG: pack?.weight ?? null,
+          lengthCm: dims ? dims[0] : pack?.length ?? null,
+          widthCm: dims ? dims[1] : pack?.width ?? null,
+          heightCm: dims ? dims[2] : pack?.height ?? null,
+          stock: s.stock ?? null,
+        });
+      }
+      // skuMap 没解析到时退回包装信息列表
+      if (!info.skus?.length && skuList.length) {
+        info.skus = skuList.map((s) => {
+          const dims = s.length && s.width && s.height ? [s.length, s.width, s.height] : null;
+          return {
+            skuId: s.skuId || '',
+            name: s.name || '',
+            price: null,
+            weightG: s.weight ?? null,
+            lengthCm: dims ? dims[0] : null,
+            widthCm: dims ? dims[1] : null,
+            heightCm: dims ? dims[2] : null,
+            stock: null,
+          };
+        });
+      }
+      const merged = info.skus || [];
+      const firstSku = merged.find((s) => s.weightG || (s.lengthCm && s.widthCm && s.heightCm)) || merged[0];
       if (firstSku) {
-        info.lengthCm = firstSku.length ?? null;
-        info.widthCm = firstSku.width ?? null;
-        info.heightCm = firstSku.height ?? null;
-        info.weightG = firstSku.weight ?? null;
-        info.packSkuCount = skuList.length;
-        if (firstSku.weight || (firstSku.length && firstSku.width && firstSku.height)) info.fromPackTab = true;
+        if (firstSku.lengthCm) info.lengthCm = firstSku.lengthCm;
+        if (firstSku.widthCm) info.widthCm = firstSku.widthCm;
+        if (firstSku.heightCm) info.heightCm = firstSku.heightCm;
+        if (firstSku.weightG) info.weightG = firstSku.weightG;
+        info.packSkuCount = merged.length;
+        if (firstSku.weightG || (firstSku.lengthCm && firstSku.widthCm && firstSku.heightCm)) info.fromPackTab = true;
       }
 
-      let pack = firstSku && firstSku.length ? { l: firstSku.length, w: firstSku.width, h: firstSku.height, wt: firstSku.weight } : null;
+      let pack =
+        firstSku && firstSku.lengthCm != null
+          ? { l: firstSku.lengthCm, w: firstSku.widthCm, h: firstSku.heightCm, wt: firstSku.weightG }
+          : null;
 
       if (!pack) {
         // 兜底：点「包装信息」tab 再抓表格

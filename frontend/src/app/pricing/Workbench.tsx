@@ -72,6 +72,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   const [resultOpen, setResultOpen] = useState(false);
   const [fetchingOffer, setFetchingOffer] = useState(false);
   const [offer, setOffer] = useState<any>(null);
+  const [skuId, setSkuId] = useState<string | null>(null);
   const [tabs, setTabs] = useState<string[]>([]);
   const [searchKw, setSearchKw] = useState('');
   const [syncing, setSyncing] = useState(false);
@@ -152,10 +153,13 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
       widthCm: dims[1] || undefined,
       heightCm: dims[2] || undefined,
       weightKg: p.weightKg || undefined,
+      // 商品库之前存过的 1688 货源链接自动带出（保存记录时会回写）
+      supplyUrl: p.supplyUrl || '',
     });
     setCalc(null);
     setChannelId(null);
     setOffer(null);
+    setSkuId(null);
   };
 
   // ---------------- 1688 找货源（纯 HTTP 为主，秒级）----------------
@@ -368,8 +372,44 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   const chooseOffer = async (item: any) => {
     setResultOpen(false);
     form.setFieldsValue({ supplyUrl: item.offerUrl, offer1688Title: item.title });
-    if (item.price != null) form.setFieldsValue({ purchaseCost: item.price });
+    setSkuId(null);
     await fetchOffer(item.offerUrl);
+  };
+
+  /**
+   * 选中某个 1688 规格：采购成本 = 规格价 + 另需运费（1688 在货款之外单独收运费），
+   * 尺寸用规格名里带的（17*7*3 比外箱尺寸更贴近计费重），重量用该规格的。
+   */
+  const applyOfferSku = (s: any) => {
+    if (!s) return;
+    const freight = Number(offer?.freightYuan || 0);
+    const patch: any = { skuId: s.skuId };
+    if (s.price != null) patch.purchaseCost = Number((s.price + freight).toFixed(2));
+    if (s.lengthCm && s.widthCm && s.heightCm) {
+      patch.lengthCm = s.lengthCm;
+      patch.widthCm = s.widthCm;
+      patch.heightCm = s.heightCm;
+    }
+    if (s.weightG) {
+      patch.weightKg = Number((s.weightG / 1000).toFixed(4));
+      patch.weightSource = '1688规格';
+    }
+    form.setFieldsValue(patch);
+    setSkuId(s.skuId);
+  };
+
+  /** 抓完货品后默认选一个规格（最低价），用户可在下拉里换成实际要的那个 */
+  const applyDefaultSku = (data: any) => {
+    const skus: any[] = (data?.skus || []).filter((s: any) => s.price != null);
+    if (!skus.length) {
+      // 没有规格列表：至少把另需运费加上
+      if (data?.price != null && data?.freightYuan != null) {
+        form.setFieldsValue({ purchaseCost: Number((data.price + data.freightYuan).toFixed(2)) });
+      }
+      return;
+    }
+    const cheapest = [...skus].sort((a, b) => a.price - b.price)[0];
+    applyOfferSku(cheapest);
   };
 
   const fetchOffer = async (url: string) => {
@@ -381,18 +421,20 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     try {
       const { data } = await http.post('/pricing/sourcing/offer', { url });
       setOffer(data);
-      if (data?.weightG) {
+      setSkuId(null);
+      if (data?.title) form.setFieldsValue({ offer1688Title: data.title });
+      if (data?.weightG && !data?.skus?.length) {
         form.setFieldsValue({ weightKg: Number((data.weightG / 1000).toFixed(4)), weightSource: '1688包装信息' });
       }
-      if (data?.lengthCm && data?.widthCm && data?.heightCm) {
+      if (data?.lengthCm && data?.widthCm && data?.heightCm && !data?.skus?.length) {
         form.setFieldsValue({ lengthCm: data.lengthCm, widthCm: data.widthCm, heightCm: data.heightCm });
       }
-      if (data?.price != null) form.setFieldsValue({ purchaseCost: data.price });
-      if (data?.title) form.setFieldsValue({ offer1688Title: data.title });
+      applyDefaultSku(data);
+      const skuCnt = (data?.skus || []).length;
       message.success(
-        data?.weightG
-          ? `已抓到：¥${data.price ?? '-'} · ${data.lengthCm}×${data.widthCm}×${data.heightCm}cm · ${data.weightG}g`
-          : `已抓到标题与价格${data?.warnings?.length ? '，包装信息请手动补填' : ''}`,
+        `已抓到${skuCnt ? ` ${skuCnt} 个规格` : `：¥${data?.price ?? '-'}`} · ${
+          data?.freightYuan != null ? `另需运费 ¥${data.freightYuan}（已计入成本）` : '未读到另需运费'
+        }`,
       );
     } catch (e: any) {
       message.error(e.message);
@@ -488,22 +530,37 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
       log(`✔ 搜到 ${items.length} 款，选：${(first.title || first.offerId).slice(0, 26)}（¥${first.price ?? '-'}）`);
       form.setFieldsValue({ supplyUrl: first.offerUrl, offer1688Title: first.title });
       if (first.price != null) form.setFieldsValue({ purchaseCost: first.price });
-      if (first.price != null) form.setFieldsValue({ purchaseCost: first.price });
 
-      // 3. 抓货品（价格 + 包装信息）
+      // 3. 抓货品（价格 + 包装信息 + 规格 + 另需运费）
       log('打开 1688 货品页抓取价格与包装信息…');
       const { data: of } = await http.post('/pricing/sourcing/offer', { url: first.offerUrl });
       setOffer(of);
-      if (of?.price != null) form.setFieldsValue({ purchaseCost: of.price });
+      setSkuId(null);
       if (of?.title) form.setFieldsValue({ offer1688Title: of.title });
-      if (of?.weightG) {
-        form.setFieldsValue({ weightKg: Number((of.weightG / 1000).toFixed(4)), weightSource: '1688包装信息' });
-        log(`✔ 包装信息：${of.lengthCm}×${of.widthCm}×${of.heightCm}cm · ${of.weightG}g`);
+      const skus: any[] = of?.skus || [];
+      if (skus.length) {
+        const cheapest = [...skus.filter((s: any) => s.price != null)].sort((a: any, b: any) => a.price - b.price)[0] || skus[0];
+        applyOfferSku(cheapest);
+        const freightTxt = of?.freightYuan != null ? ` + 运费 ¥${of.freightYuan}` : '';
+        log(
+          `✔ 抓到 ${skus.length} 个规格，默认选最低价「${cheapest.name}」¥${cheapest.price ?? '-'}${freightTxt}` +
+            (cheapest.lengthCm ? ` · ${cheapest.lengthCm}×${cheapest.widthCm}×${cheapest.heightCm}cm · ${cheapest.weightG ?? '-'}g` : '') +
+            '（可在「1688 规格」下拉里换成实际要的规格）',
+        );
       } else {
-        log('⚠ 没抓到包装信息，先用商品库的重量尺寸');
-      }
-      if (of?.lengthCm && of?.widthCm && of?.heightCm) {
-        form.setFieldsValue({ lengthCm: of.lengthCm, widthCm: of.widthCm, heightCm: of.heightCm });
+        if (of?.price != null) {
+          const freight = Number(of?.freightYuan || 0);
+          form.setFieldsValue({ purchaseCost: Number((of.price + freight).toFixed(2)) });
+        }
+        if (of?.weightG) {
+          form.setFieldsValue({ weightKg: Number((of.weightG / 1000).toFixed(4)), weightSource: '1688包装信息' });
+          log(`✔ 包装信息：${of.lengthCm}×${of.widthCm}×${of.heightCm}cm · ${of.weightG}g`);
+        } else {
+          log('⚠ 没抓到包装信息，先用商品库的重量尺寸');
+        }
+        if (of?.lengthCm && of?.widthCm && of?.heightCm) {
+          form.setFieldsValue({ lengthCm: of.lengthCm, widthCm: of.widthCm, heightCm: of.heightCm });
+        }
       }
       (of?.warnings || []).forEach((w: string) => log('⚠ ' + w));
 
@@ -775,21 +832,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
           </Card>
         ) : null}
 
-        {tabs.length ? (
-          <Card size="small" title="浏览器里的 1688 页面" style={{ marginTop: 12 }}>
-            <Space direction="vertical" size={2} style={{ width: '100%' }}>
-              {[...new Set(tabs)].slice(0, 6).map((t, i) => (
-                <a key={i} href={t} target="_blank" rel="noreferrer" style={{ fontSize: 12, wordBreak: 'break-all' }}>
-                  {t.slice(0, 130)}
-                </a>
-              ))}
-              <div style={{ fontSize: 12, color: '#999' }}>
-                在浏览器里挑好货源后，把 detail.1688.com/offer/… 链接粘到下面「1688 货源链接」，点右侧「抓取 1688 价格/包装信息」即可。
-              </div>
-            </Space>
-          </Card>
-        ) : null}
-
         <Card size="small" title="② 货源与包裹" style={{ marginTop: 12 }}>
           <Form form={form} layout="vertical" size="small">
             <Row gutter={12}>
@@ -806,9 +848,37 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
                 </Form.Item>
               </Col>
             </Row>
+            {offer?.skus?.length ? (
+              <Row gutter={12} style={{ marginTop: -8 }}>
+                <Col span={16}>
+                  <Form.Item
+                    label="1688 规格（选中后自动填成本=规格价+运费、尺寸、重量）"
+                    style={{ marginBottom: 8 }}
+                  >
+                    <Select
+                      showSearch
+                      optionFilterProp="label"
+                      value={skuId ?? undefined}
+                      placeholder="选一个规格（默认最低价）"
+                      onChange={(v) => applyOfferSku((offer.skus || []).find((s: any) => s.skuId === v))}
+                      options={(offer.skus || []).map((s: any) => ({
+                        value: s.skuId,
+                        label: `${s.name} · ¥${s.price ?? '-'}${
+                          s.weightG ? ` · ${s.weightG}g` : ''
+                        }${s.lengthCm ? ` · ${s.lengthCm}×${s.widthCm}×${s.heightCm}` : ''}${
+                          s.stock != null ? ` · 库存${s.stock}` : ''
+                        }${s.skuId === skuId ? '（当前）' : ''}`,
+                      }))}
+                    />
+                  </Form.Item>
+                </Col>
+              </Row>
+            ) : null}
             <Row gutter={12}>
               <Col span={6}>
-                <Form.Item name="purchaseCost" label="采购成本 ¥" rules={[{ required: true }]}>
+                <Form.Item name="purchaseCost" label="采购成本 ¥" rules={[{ required: true }]}
+                  extra={offer?.freightYuan != null ? <span style={{ color: '#d46b08' }}>已含 1688 另需运费 ¥{offer.freightYuan}</span> : undefined}
+                >
                   <InputNumber style={{ width: '100%' }} min={0} precision={2} />
                 </Form.Item>
               </Col>
@@ -1107,43 +1177,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
             },
           ]}
         />
-      </Modal>
-
-      {/* 手动粘贴 1688 Cookie */}
-      <Modal
-        open={cookieOpen}
-        onCancel={() => setCookieOpen(false)}
-        onOk={saveCookie}
-        okText="保存 Cookie"
-        confirmLoading={syncing}
-        title="粘贴 1688 Cookie（一次即可，之后全程走 HTTP）"
-        width={720}
-      >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="怎么复制："
-          description={
-            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-              <li>在 Chrome 里打开并登录 <b>www.1688.com</b>（确保是已登录状态）</li>
-              <li>按 <b>F12</b> 打开开发者工具，切到 <b>Network（网络）</b> 面板</li>
-              <li>地址栏回车刷新页面，在请求列表里随便点一条 <b>www.1688.com</b> 的请求（一般是最上面那条 document）</li>
-              <li>右侧找到 <b>Request Headers（请求标头）</b> → <b>Cookie</b>，右键 → Copy value（复制值）</li>
-              <li>把它整段粘到下面，点保存</li>
-            </ol>
-          }
-        />
-        <Input.TextArea
-          rows={8}
-          value={cookieText}
-          onChange={(e) => setCookieText(e.target.value)}
-          placeholder="把整段 Cookie 粘到这里，例如：cookie2=xxxx; _m_h5_tk=xxxx_1234; unb=123456; ..."
-        />
-        <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
-          也支持点上面的「同步 1688 登录态」：从「浏览器接管」的调试 Chrome 里直接读一次（只读 cookie，不渲染页面，0.15 秒）。
-          Cookie 失效后搜款会提示，重新做一次即可（一般能管几周到几个月）。
-        </div>
       </Modal>
 
       {/* 手动粘贴 1688 Cookie */}

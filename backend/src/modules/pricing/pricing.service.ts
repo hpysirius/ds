@@ -487,6 +487,7 @@ export class PricingService {
       lengthCm: p.sizeLengthMm ? r2(p.sizeLengthMm / 10) : 0,
       widthCm: p.sizeWidthMm ? r2(p.sizeWidthMm / 10) : 0,
       heightCm: p.sizeHeightMm ? r2(p.sizeHeightMm / 10) : 0,
+      supplyUrl: p.supplyUrl,
     }));
   }
 
@@ -613,6 +614,12 @@ export class PricingService {
     };
     const data = this.recompute(base);
     const row = await this.prisma.pricingRecord.create({ data });
+    // 1688 货源链接回写到商品库：下次选品/核价自动带出，不用再粘一遍
+    if (dto.sku && dto.supplyUrl) {
+      await this.prisma.product
+        .updateMany({ where: { sku: dto.sku }, data: { supplyUrl: dto.supplyUrl } })
+        .catch(() => undefined);
+    }
     return this.fmtRecord(row);
   }
 
@@ -733,6 +740,12 @@ export class PricingService {
     delete merged.userId;
     const data = this.recompute(merged);
     const row = await this.prisma.pricingRecord.update({ where: { id }, data });
+    // 编辑时改了货源链接也同步回商品库
+    if (exists.sku && dto.supplyUrl) {
+      await this.prisma.product
+        .updateMany({ where: { sku: exists.sku }, data: { supplyUrl: dto.supplyUrl } })
+        .catch(() => undefined);
+    }
     return this.fmtRecord(row);
   }
 

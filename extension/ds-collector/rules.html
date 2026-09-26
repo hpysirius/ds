@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>DS 采集助手 · 采集规则</title>
+    <style>
+      :root {
+        --bg: #f5f6f8; --card: #fff; --fg: #1f2328; --muted: #6b7280;
+        --line: #e5e7eb; --primary: #2563eb; --err: #dc2626;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--fg);
+        font: 14px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      .wrap { max-width: 860px; margin: 0 auto; padding: 24px 20px 60px; }
+      header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+      h1 { font-size: 18px; margin: 0; }
+      .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+      button {
+        padding: 7px 14px; border: 1px solid var(--line); border-radius: 6px;
+        background: #fff; cursor: pointer; font-size: 13px; white-space: nowrap;
+      }
+      button:hover { background: #f3f4f6; }
+      button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+      button.primary:hover { background: #1d4ed8; }
+      button.danger { color: var(--err); border-color: #fecaca; }
+      button.danger:hover { background: #fef2f2; }
+      input[type="text"], input[type="number"], select {
+        padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+        font-size: 13px; outline: none; background: #fff;
+      }
+      input:focus, select:focus { border-color: var(--primary); }
+
+      /* 规则列表 */
+      .rule-list { display: flex; flex-direction: column; gap: 10px; }
+      .rule-item {
+        background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        padding: 12px 16px; display: flex; align-items: center; gap: 12px;
+      }
+      .rule-item.disabled { opacity: .55; }
+      .tag-chip {
+        display: inline-block; padding: 2px 10px; border-radius: 4px;
+        color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap;
+      }
+      .rule-name { font-weight: 600; }
+      .rule-meta { color: var(--muted); font-size: 12px; flex: 1; }
+      .switch { position: relative; width: 38px; height: 20px; flex: none; cursor: pointer; }
+      .switch input { display: none; }
+      .switch i {
+        position: absolute; inset: 0; border-radius: 99px; background: #d1d5db; transition: .2s;
+      }
+      .switch i::after {
+        content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+        border-radius: 99px; background: #fff; transition: .2s;
+      }
+      .switch input:checked + i { background: var(--primary); }
+      .switch input:checked + i::after { left: 20px; }
+      .empty {
+        background: var(--card); border: 1px dashed var(--line); border-radius: 10px;
+        padding: 40px; text-align: center; color: var(--muted);
+      }
+
+      /* 编辑弹窗 */
+      .modal-mask {
+        display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+        z-index: 10; overflow: auto; padding: 40px 16px;
+      }
+      .modal-mask.show { display: block; }
+      .modal {
+        max-width: 640px; margin: 0 auto; background: var(--card);
+        border-radius: 12px; padding: 22px 24px;
+      }
+      .modal h2 { font-size: 16px; margin: 0 0 16px; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+      .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+      .field label.req::after { content: ' *'; color: var(--err); }
+      .field input, .field select { width: 100%; }
+      .color-field { display: flex; gap: 6px; align-items: center; }
+      .color-field input[type="color"] { width: 40px; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
+      .color-field input[type="text"] { flex: 1; }
+      details { margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; }
+      summary { padding: 10px 14px; cursor: pointer; font-weight: 600; font-size: 13px; user-select: none; }
+      .conds { padding: 4px 14px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; }
+      .cond { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+      .cond > span { width: 96px; flex: none; color: var(--muted); }
+      .cond input { width: 0; flex: 1; min-width: 0; padding: 5px 7px; font-size: 12px; }
+      .cond b { color: var(--muted); font-weight: 400; flex: none; }
+      .modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+      .form-err { color: var(--err); font-size: 12px; min-height: 18px; margin-top: 8px; }
+      .hint-box {
+        background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        padding: 12px 16px; font-size: 12px; color: var(--muted); margin-bottom: 16px;
+      }
+      .hint-box b { color: var(--fg); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>采集规则</h1>
+        <button id="add" class="primary">＋ 新增规则</button>
+      </header>
+      <div class="sub">
+        采集时自动给每个商品逐条匹配规则，命中的商品打上对应标签并随数据存进系统（products.raw.tags）。
+      </div>
+
+      <div class="hint-box">
+        <b>怎么用：</b>① 新增规则，设置条件（比如 月销量 ≥ 50、重量 ≤ 500g）和标签名/颜色 →
+        ② 到 Ozon 列表页点插件的「采集当前列表页」→ 命中规则的商品会自动带上标签入库。<br />
+        <b>注意：</b>月销量、广告费占比等经营指标来自选品插件的浮层，需要你<b>登录 Ozon 卖家账号</b>后采集才有；
+        未登录时这些条件不命中（价格/评分/评论数等公开字段不受影响）。
+      </div>
+
+      <div id="list" class="rule-list"></div>
+
+      <div id="modalMask" class="modal-mask">
+        <div class="modal">
+          <h2 id="modalTitle">新增规则</h2>
+          <div class="grid">
+            <div class="field">
+              <label class="req">规则名称</label>
+              <input id="f_name" type="text" maxlength="15" placeholder="如：小体积高销量" />
+            </div>
+            <div class="field">
+              <label class="req">标签名称</label>
+              <input id="f_tag" type="text" maxlength="6" placeholder="如：潜力款" />
+            </div>
+            <div class="field">
+              <label>优先级（数字小的先匹配）</label>
+              <input id="f_priority" type="number" value="0" step="1" />
+            </div>
+            <div class="field">
+              <label>标签颜色</label>
+              <div class="color-field">
+                <input id="f_colorPick" type="color" value="#1677ff" />
+                <input id="f_color" type="text" maxlength="7" value="#1677ff" />
+              </div>
+            </div>
+            <div class="field">
+              <label>品牌选项</label>
+              <select id="f_brand">
+                <option value="any">不限</option>
+                <option value="none">仅无品牌</option>
+                <option value="custom">品牌包含关键字</option>
+              </select>
+            </div>
+            <div class="field" id="brandTextField" style="display:none">
+              <label>品牌关键字</label>
+              <input id="f_brandText" type="text" maxlength="40" placeholder="如：Samsung" />
+            </div>
+            <div class="field">
+              <label>发货模式</label>
+              <select id="f_salesSchema">
+                <option value="">不限</option>
+                <option value="FBS">FBS</option>
+                <option value="FBO">FBO</option>
+                <option value="rFBS">rFBS</option>
+              </select>
+            </div>
+          </div>
+
+          <details id="condsBox">
+            <summary>更多规则条件（留空 = 不限制）</summary>
+            <div class="conds" id="conds"></div>
+          </details>
+
+          <div class="form-err" id="formErr"></div>
+          <div class="modal-foot">
+            <button id="cancel">取 消</button>
+            <button id="save" class="primary">确 定</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="rules.js"></script>
+  </body>
+</html>

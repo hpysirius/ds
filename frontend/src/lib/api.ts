@@ -16,7 +16,9 @@ http.interceptors.response.use(
   (res) => res,
   (err) => {
     const msg = err?.response?.data?.message || err.message || '请求失败';
-    return Promise.reject(new Error(Array.isArray(msg) ? msg[0] : msg));
+    const e: any = new Error(Array.isArray(msg) ? msg[0] : msg);
+    e.response = err?.response; // 保留状态码，便于页面区分"未登录"等场景
+    return Promise.reject(e);
   },
 );
 

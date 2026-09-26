@@ -23,6 +23,28 @@ export function collectProduct() {
     return m ? txt(m.getAttribute('content')) : '';
   };
 
+  /** 浮层字段值归一化（规则匹配和后端都按这套语义消费）：
+   *  - 俄语小数是逗号（"10,94 ¥" → 10.94），千分位是空格
+   *  - 重量统一成克（"1,2 кг" → 1200、"50g" → 50）
+   *  - 上架日期 / 体积 / 跟卖列表保留原文（带单位、多值，不能粗暴转数字） */
+  const cardVal = (k, t) => {
+    if (k === 'createDate' || k === 'volume' || k === 'offers') return t;
+    if (k === 'weight') {
+      const wm = t.match(/([\d.,]+)\s*(кг|kg|гр?|g)?/i);
+      if (wm) {
+        let v = num(String(wm[1]).replace(/,/g, '.'));
+        if (v !== null) {
+          if (/^(кг|kg)$/i.test(wm[2] || '')) v *= 1000;
+          return Math.round(v);
+        }
+      }
+      return t;
+    }
+    if (t.indexOf('/') >= 0) return t;
+    const n = num(t.replace(/%/g, '').replace(/[\s\u00a0]/g, '').replace(/,/g, '.'));
+    return n !== null ? n : t;
+  };
+
   // ① JSON-LD
   try {
     const lds = document.querySelectorAll('script[type="application/ld+json"]');
@@ -130,8 +152,7 @@ export function collectProduct() {
         if (!t) t = ve ? (ve.innerText || ve.textContent) : (rows[i].innerText || rows[i].textContent || '');
         t = txt(t);
         if (!t) continue;
-        const n = t.indexOf('/') < 0 ? num(t.replace(/[%\s\u00a0,]/g, '')) : null;
-        card[k] = n !== null ? n : t;
+        card[k] = cardVal(k, t);
       }
     };
     const hosts = document.querySelectorAll(
@@ -142,6 +163,21 @@ export function collectProduct() {
     if (!Object.keys(card).length) readRows(document.querySelectorAll('[data-s2-field-key]'));
     if (Object.keys(card).length) out.pluginCard = card;
   } catch (e) { /* 没装插件就跳过 */ }
+
+  /*
+   * 商品链接：优先 og:url（SEO 给的是干净地址），退回当前地址。
+   * 注意一定要带 https 前缀 —— 后端写库前会校验 http(s)，插件表单 stirng 处理不当会存成相对路径。
+   */
+  let purl = meta('meta[property="og:url"]');
+  if (!purl) {
+    try {
+      const l = document.querySelector('link[rel="canonical"]');
+      if (l) purl = String(l.getAttribute('href') || '');
+    } catch (e) { /* ignore */ }
+  }
+  if (!purl) purl = location.href;
+  if (purl && purl.indexOf('//') === 0) purl = 'https:' + purl;
+  out.productUrl = purl;
 
   out.url = location.href;
   return out;
@@ -179,6 +215,25 @@ export function collectList() {
   const WIDGET_SEL = '[class*="s2-widget"],[class*="s2-tile"],[data-s2-ozon-sku]';
   const touchedByWidget = (el) =>
     !!(el.closest && (el.closest(WIDGET_SEL) || el.querySelector(WIDGET_SEL)));
+
+  // 浮层字段值归一化（同 collectProduct 里的 cardVal：重量成克、日期/体积/跟卖保留原文、逗号小数）
+  const cardVal = (k, t) => {
+    if (k === 'createDate' || k === 'volume' || k === 'offers') return t;
+    if (k === 'weight') {
+      const wm = t.match(/([\d.,]+)\s*(кг|kg|гр?|g)?/i);
+      if (wm) {
+        let v = num(String(wm[1]).replace(/,/g, '.'));
+        if (v !== null) {
+          if (/^(кг|kg)$/i.test(wm[2] || '')) v *= 1000;
+          return Math.round(v);
+        }
+      }
+      return t;
+    }
+    if (t.indexOf('/') >= 0) return t;
+    const n = num(t.replace(/%/g, '').replace(/[\s\u00a0]/g, '').replace(/,/g, '.'));
+    return n !== null ? n : t;
+  };
 
   const cards = document.querySelectorAll('div[class*="tile-root"]');
   for (let i = 0; i < cards.length; i++) {
@@ -254,8 +309,7 @@ export function collectList() {
         if (!t) t = ve ? (ve.innerText || ve.textContent) : (rows[r].innerText || rows[r].textContent || '');
         t = txt(t);
         if (!t) continue;
-        const n = t.indexOf('/') < 0 ? num(t.replace(/[%\s\u00a0,]/g, '')) : null;
-        pc[k] = n !== null ? n : t;
+        pc[k] = cardVal(k, t);
       }
       if (Object.keys(pc).length) item.pluginCard = pc;
     } catch (e) { /* 没装插件就跳过 */ }

@@ -11,9 +11,24 @@
  *      （已补上的商品会自动从待补清单里消失，所以中断后重跑天然是"断点续跑"，不会重复劳动）
  */
 import { collectProduct, probeReady, collectList, scrollDown } from './collector-lib.js';
+import { applyRulesToItem } from './rules-lib.js';
 
 const DEFAULT_API = 'http://localhost:3101';
 const STATE_KEY = 'ds_state';
+const RULES_KEY = 'rules';
+
+/** 采集规则（规则管理页维护，采集时逐条匹配给商品打标签） */
+async function getRules() {
+  const s = await chrome.storage.local.get([RULES_KEY]);
+  return Array.isArray(s[RULES_KEY]) ? s[RULES_KEY] : [];
+}
+
+/** 给单个商品按规则打标签（命中才加 item.tags，永远不覆盖已有标签） */
+async function tagItem(item) {
+  if (!item || !item.sku) return;
+  const tags = applyRulesToItem(item, await getRules());
+  if (tags.length) item.tags = tags;
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -218,22 +233,59 @@ function extractSku(url) {
  * 判定放宽：只要是 Ozon 的页面就试着采（用户可能是从搜索页、卖家页、或带各种参数的详情页过来的），
  * 真实门槛放在「能不能解析出商品 id」和「有没有采到数据」上，而不是死板地匹配 /product/ 路径。
  */
+/**
+ * 采集当前页。
+ * 判定放宽：只要是 Ozon 的页面就试着采（用户可能是从搜索页、卖家页、或带各种参数的详情页过来的），
+ * 真实门槛放在「能不能解析出商品 id」和「有没有采到数据」上，而不是死板地匹配 /product/ 路径。
+ *
+ * 两处等待很关键：
+ *   ① 用 probeReady 等页面真就绪 —— 页面还在转圈就抓，会得到一个空 payload。
+ *   ② 第三方选品插件的浮层（月销/加购率等经营指标）渲染得比页面慢，第一次没读到就等 2.5s 再采一次。
+ */
 async function collectActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !/ozon\.(ru|com|kz|by)/i.test(tab.url || '')) {
     throw new Error('当前页面不是 Ozon（请先在 Ozon 上打开商品，再点插件采集）');
   }
-  const data = await evalInTab(tab.id, collectProduct);
+
+  // ① 等页面就绪，顺便识别反爬挑战页（对着挑战页硬采只会捞回一张垃圾数据）
+  let state = 'loading';
+  for (let i = 0; i < 15; i++) {
+    try { state = await evalInTab(tab.id, probeReady); } catch (e) { state = 'loading'; }
+    if (state === 'challenge') {
+      throw new Error('Ozon 弹了反爬验证页 —— 请在页面上先过一下验证（或刷新页面），再点采集');
+    }
+    if (state === 'ready') break;
+    await sleep(800);
+  }
+
+  let data = await evalInTab(tab.id, collectProduct);
+
+  // ② 经营指标来自第三方选品插件的浮层，渲染慢一拍；没读到就再等一会儿重试一次
+  if (data && !data.pluginCard) {
+    await sleep(2500);
+    try {
+      const again = await evalInTab(tab.id, collectProduct);
+      if (again && (again.pluginCard || (again.title && !data.title))) data = again;
+    } catch (e) { /* ignore */ }
+  }
+
   if (!data || (!data.title && !data.price && !data.imageUrl)) {
-    throw new Error('没读到商品数据：页面可能还没加载完，刷新后再试');
+    throw new Error('没读到商品数据：页面可能还没加载完（或正卡在验证页），刷新后再试');
   }
   // sku 优先用页面里的真实 URL，其次用地址栏
   const sku = extractSku(data.url) || extractSku(tab.url);
   if (!sku) {
     throw new Error('没能从当前页面识别出商品 ID（请在商品详情页 ozon.ru/product/… 上采集）');
   }
-  const r = await ingest({ ...data, sku });
-  await log(`✅ 当前页 ${sku}：${(data.title || '').slice(0, 22)}… → ${r && r.fields ? r.fields.length : 0} 个字段`);
+  const payload = { ...data, sku };
+  await tagItem(payload);
+  if (payload.tags && payload.tags.length) {
+    await log(`🏷 命中规则：${payload.tags.map((t) => t.name).join('、')}`);
+  }
+  const r = await ingest(payload);
+  const n = (r && r.fields ? r.fields.length : 0);
+  await log(`${r && r.created ? '🆕 新建' : '✏️ 更新'} ${sku}：${(data.title || '').slice(0, 22)}… → ${n} 个字段${data.pluginCard ? '（含经营指标）' : ''}`);
   return r;
 }
 
@@ -294,6 +346,14 @@ async function collectListPage(scrolls) {
   const items = [...seen.values()].filter((it) => it.title || it.price || it.imageUrl);
   if (!items.length) throw new Error('没抓到任何商品卡片（页面加载完了吗？）');
 
+  // 按采集规则给商品打标签（命中的带 item.tags 一起上报入库）
+  let tagged = 0;
+  for (const it of items) {
+    await tagItem(it);
+    if (it.tags) tagged++;
+  }
+  if (tagged) await log(`🏷 ${tagged}/${items.length} 个商品命中规则打上标签`);
+
   const r = await ingestListChunked(tab.url, items);
   await log(`✅ 列表采集完成：抓到 ${items.length} 个 → 新建 ${r.created} / 更新 ${r.updated}`);
   return r;
@@ -338,6 +398,7 @@ async function runBatch(limit) {
       }
       const data = await evalInTab(tab.id, collectProduct);
       const payload = { ...(data || {}), sku: it.sku };
+      await tagItem(payload);
       const r = await ingest(payload);
       if (r && r.ok) {
         done++;
