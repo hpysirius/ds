@@ -448,6 +448,26 @@ async function collectListPage(scrolls) {
     throw new Error(aborted || '没抓到任何商品卡片（页面加载完了吗？）');
   }
 
+  /*
+   * 字段覆盖统计：这是判断「为什么商品库那么多列是空的」最直接的证据。
+   * 列表卡片天生只有 名称/价格/主图/评论/评分；类目、品牌、发货要靠「补信息」（详情页），
+   * 月销/加购率/退货率/广告占比/上架天只有第三方选品插件（中实ERP）的浮层才有。
+   */
+  const cov = { title: 0, price: 0, image: 0, reviews: 0, card: 0 };
+  for (const it of items) {
+    if (it.title) cov.title++;
+    if (it.price !== null && it.price !== undefined) cov.price++;
+    if (it.imageUrl) cov.image++;
+    if (it.reviewsCount !== null && it.reviewsCount !== undefined) cov.reviews++;
+    if (it.pluginCard) cov.card++;
+  }
+  await log(
+    `📊 字段覆盖（共 ${items.length}）：名称 ${cov.title} · 价格 ${cov.price} · 主图 ${cov.image} · 评论 ${cov.reviews} · 经营指标 ${cov.card}`,
+  );
+  if (!cov.card) {
+    await log('ℹ️ 没有读到「经营指标」浮层 —— 月销/加购率/退货率/广告占比/上架天 只存在于中实ERP选品插件的浮层里（需装插件 + 登录 Ozon 卖家号）；类目/品牌/发货请点「补信息」用详情页补。');
+  }
+
   // 按采集规则给商品打标签（命中的带 item.tags 一起上报入库）
   let tagged = 0;
   for (const it of items) {
@@ -460,7 +480,7 @@ async function collectListPage(scrolls) {
   await log(
     `✅ 列表采集${aborted ? '未跑完，已上传已抓到的部分' : '完成'}：抓到 ${items.length} 个 → 新建 ${r.created} / 更新 ${r.updated}`,
   );
-  return { ...r, aborted: aborted || '' };
+  return { ...r, aborted: aborted || '', coverage: cov };
 }
 
 async function runBatch(limit) {

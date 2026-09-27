@@ -116,7 +116,23 @@ const BAD_TITLE_RE = /antibot|нет соединени|доступ огран�
  * 它的 widget 会插进商品卡片 DOM 里，插件采集时可能被当成标题整段抓走
  * （实测商品名叫「中卖搏通ERP选品标签：类目：---rFBS佣金：…」）—— 这种标题绝不入库。
  */
-const WIDGET_TITLE_RE = /中卖搏通ERP|中实跨境ERP|选品标签[:：]/;
+const WIDGET_TITLE_RE = /中卖搏通ERP|中实跨境ERP|闪电采集|选品标签[:：]/;
+
+/**
+ * 「明显不是商品名」的标题特征。实测见过商品名被写成「还剩5件新品」「25,13 ₽42,12 ₽-40%」——
+ * Ozon 中文界面下促销/库存标签被当成标题、或把价格串当标题抓走。
+ * 只对**短字符串**（<=40 字）判定，避免误伤正常长标题里恰好出现的词；价格串则看货币符号/末尾百分比。
+ */
+const JUNK_TITLE_RE =
+  /^(新品|还剩|剩\s*\d|仅剩|清仓|特价|优惠|折扣|促销|爆款|热销|秒杀|包邮|次日达|最低价|超值|限时|现货|预售|Новинка|Распродажа|Хит|Скидка)/i;
+const PRICEY_TITLE_RE = /[₽¥$€]|-?\d+\s*%$/;
+
+/** 是不是「促销标签 / 价格串」这类脏标题（短文本才判，长标题一律放行） */
+function isJunkTitle(v: any): boolean {
+  const s = String(v == null ? '' : v).trim();
+  if (!s || s.length > 40) return false;
+  return JUNK_TITLE_RE.test(s) || PRICEY_TITLE_RE.test(s);
+}
 
 /**
  * 「还缺关键字段」的筛选条件：类目 / 主图 / 价格 任一为空。
@@ -1597,8 +1613,8 @@ export class SourcingService {
     // 插件可能把「中实ERP」插件渲染的卡片字段一起带上来（月销/加购率/退货率等）
     best.pluginCard = dto?.pluginCard || undefined;
 
-    // 反爬/错误页的标题不入库
-    if (best.title && BAD_TITLE_RE.test(String(best.title))) {
+    // 反爬/错误页的标题、以及「促销标签/价格串」这类脏标题都不入库
+    if (best.title && (BAD_TITLE_RE.test(String(best.title)) || isJunkTitle(best.title))) {
       delete best.title;
       if (!best.price && !best.imageUrl && !best.categoryPath) {
         return { sku, ok: false, fields: [], reason: 'Ozon 返回的是反爬/错误页，未写入任何数据' };
@@ -1637,8 +1653,8 @@ export class SourcingService {
         data[k] = max ? String(v).slice(0, max) : v;
       };
       const title = toStr(it.title);
-      // 反爬/错误页标题、第三方插件浮层文本，都不当标题入库
-      if (title && !BAD_TITLE_RE.test(title) && !WIDGET_TITLE_RE.test(title)) put('title', title, 490);
+      // 反爬/错误页标题、第三方插件浮层文本、促销标签/价格串，都不当标题入库
+      if (title && !BAD_TITLE_RE.test(title) && !WIDGET_TITLE_RE.test(title) && !isJunkTitle(title)) put('title', title, 490);
       const p = toNum(it.price);
       if (p !== null) data.price = p;
       const img = toStr(it.imageUrl);
@@ -1660,17 +1676,27 @@ export class SourcingService {
             }))
         : [];
       // 列表页卡片上也挂着选品插件的浮层（月销/佣金/类目等），有就一并映射入库
+      // 顺手把「抓到的币种符号」留档到 raw：用户浏览器里价格可能显示成 ¥（值仍是卢布量级），
+      // 存下来便于日后核对是不是被本地化换算过（不参与计算，只做诊断）。
+      const sym = it?.priceSymbol ? { priceSymbol: String(it.priceSymbol).slice(0, 4) } : {};
       if (it.pluginCard && typeof it.pluginCard === 'object') {
         applyPluginCard(data, it.pluginCard);
-        data.raw = { from: 'list', sourceUrl, pluginCard: it.pluginCard, ...(tags.length ? { tags } : {}) };
-      } else if (sourceUrl || tags.length) {
-        data.raw = { from: 'list', sourceUrl, ...(tags.length ? { tags } : {}) };
+        data.raw = { from: 'list', sourceUrl, pluginCard: it.pluginCard, ...sym, ...(tags.length ? { tags } : {}) };
+      } else if (sourceUrl || tags.length || sym.priceSymbol) {
+        data.raw = { from: 'list', sourceUrl, ...sym, ...(tags.length ? { tags } : {}) };
       }
       data.lastSeenAt = new Date();
 
-      const exist = await this.prisma.product.findUnique({ where: { sku }, select: { id: true } });
+      const exist = await this.prisma.product.findUnique({ where: { sku }, select: { id: true, title: true } });
       if (exist) {
-        await this.prisma.product.update({ where: { sku }, data });
+        const patch: any = { ...data };
+        // 自愈：这一轮没解析出标题、但库里存的是一条「促销标签/价格串/选品插件浮层文本」脏标题
+        // → 就地清掉。否则脏标题会永远赖着不走（解析不到标题时不覆盖，脏值就永久残留）。
+        const oldT = String(exist.title || '');
+        if (!patch.title && (isJunkTitle(oldT) || WIDGET_TITLE_RE.test(oldT) || BAD_TITLE_RE.test(oldT))) {
+          patch.title = null;
+        }
+        await this.prisma.product.update({ where: { sku }, data: patch });
         updated++;
       } else {
         await this.prisma.product.create({ data: { sku, ...data } });

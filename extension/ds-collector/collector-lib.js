@@ -89,7 +89,9 @@ export function collectProduct() {
     const h1 = document.querySelector('h1');
     if (h1) {
       const ht = txt(h1.innerText || h1.textContent);
-      if (ht && ht.length > (out.title || '').length) out.title = ht;
+      // 选品插件浮层的字段串（「闪电采集选品标签：类目：…」）绝不能被当成商品名
+      const widgetLike = /选品标签|类目[:：]|rFBS佣金|月销量|跟卖最低价|暂无数据/.test(ht);
+      if (ht && !widgetLike && ht.length > (out.title || '').length) out.title = ht;
     }
   } catch (e) { /* ignore */ }
   try {
@@ -113,9 +115,10 @@ export function collectProduct() {
   } catch (e) { /* ignore */ }
   try {
     const bt = String(document.body.innerText || '');
-    if (/Нет отзывов/i.test(bt)) out.reviewsCount = 0;
+    // 评论数：俄语 "12 отзывов" / 中文 "12 条评论"（Ozon 会按账号语言本地化）
+    if (/нет отзывов|暂无评论|还没有评论/i.test(bt)) out.reviewsCount = 0;
     else if (out.reviewsCount == null) {
-      const m = bt.match(/(\d[\d\s\u00a0]*)[\s\u00a0]*(отзыв|отзыва|отзывов)/i);
+      const m = bt.match(/(\d[\d\s\u00a0]*)[\s\u00a0]*(отзыв[а-яё]*|条评论|个评价|条评价|评论|评价)/i);
       if (m) out.reviewsCount = num(m[1].replace(/[\s\u00a0]/g, ''));
     }
   } catch (e) { /* ignore */ }
@@ -186,13 +189,16 @@ export function collectProduct() {
 /**
  * 列表页采集：把当前 Ozon 列表页（/highlight/…、/search/…、类目页）上的商品卡片全抓下来。
  *
- * 实测结构（2026-09）：
+ * 实测结构（2026-09-28）：
  *   卡片容器  div.tile-root（类名带哈希后缀如 "tile-root p5g_21 h3k_21"，所以按 class* 匹配）
- *   商品链接  a[href="/product/xxx-1234567890/?…"]  ← sku 从这里抠
- *   主图      img[src]
- *   价格      形如 "479 ₽" 的文本
- *   标题      卡片里第一条「长度够、不含 ₽、不是促销标签、不是日期」的文本
- * 类名全是构建期哈希，不能硬编码；所以这里全靠结构 + 文本特征，比写死 class 稳得多。
+ *   商品链接  a[href="/product/xxx-1234567890/?…"]  ← sku 从这里抠；其 title/aria-label 常是完整商品名
+ *   主图      img[src]（alt 通常就是商品名，是最稳的标题来源）
+ *   标题      class 含 tsBody 的文本（Ozon 设计系统排版类，构建期哈希变但前缀稳定）
+ *   价格      class 含 tsHeadline 的文本，形如 "479 ₽" 或 "25,13 ₽42,12 ₽-40%"
+ *
+ * ⚠️ 关键：Ozon 会按账号语言把界面本地化 —— 俄语/中文都见过，促销标签会变成「还剩5件新品」这类中文。
+ * 所以文案特征必须**同时覆盖俄语和中文**，否则促销标签会被当成商品名（实测踩过）。
+ * 类名全是构建期哈希，不能硬编码；这里靠结构 + class 前缀(tsBody/tsHeadline) + 文本特征三重兜底。
  */
 export function collectList() {
   const items = [];
@@ -202,10 +208,50 @@ export function collectList() {
     const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
     return isNaN(n) ? null : n;
   };
-  // 促销标签 / 日期 / 评论数 / 库存提示：这些都不是标题，要剔掉
-  const LABEL = /^(Новинка|Распродажа|Хит|Выгодно|Топ|Лучшая цена|Скидка|Подарок|Кэшбэк)/i;
+  /*
+   * 文案特征（俄语 + 中文都要覆盖）：促销标签 / 日期 / 评论 / 库存 / 纯单位词 —— 这些都不是商品名。
+   * Ozon 中文界面下促销标签是「还剩5件新品」这种，早期只写了俄语，导致它被当成标题入库（已修）。
+   */
+  const LABEL = /^(Новинка|Распродажа|Хит|Выгодно|Топ|Лучшая цена|Скидка|Подарок|Кэшбэк|新品|还剩|剩\s*\d|仅剩|清仓|特价|优惠|折扣|促销|爆款|热销|秒杀|包邮|次日达|最低价|超值|限时|现货|预售|赠品|返现)/i;
   const DATE = /^\d{1,2}\s*(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)/i;
-  const STOCK = /仅剩|остал/i;
+  const REVIEW = /отзыв|评论|评价/;
+  const STOCK = /仅剩|остал|还剩|剩\s*\d|新品/i;
+  const PRICEY = /[₽¥$€]/;
+  const UNIT_ONLY = /^(шт\.?|г|кг|мл|л|см|мм|м|т|天|件|个|条|包|盒|片|双|套|pcs|ml|g|kg|cm|mm)$/i;
+  const HAS_LETTER = /[A-Za-zА-Яа-яЁё\u4e00-\u9fff]/;
+  /*
+   * 第三方选品插件（中实跨境ERP / 闪电采集）浮层文本的特征词。
+   * 它的浮层是一整段「闪电采集选品标签：类目：…rFBS佣金：…月销量：…跟卖最低价：…」，
+   * 段长、不含货币符号，靠 class 过滤一旦失手就会被当成「最长的合格文本」选成商品名
+   * （实测库里真出现过这种标题）。所以在**文本层面**再加一道硬闸，不依赖 DOM class。
+   */
+  const NOT_TITLE = /选品标签|类目[:：]|rFBS佣金|月销量|月销售额|跟卖最低价|历史平均价格|商品卡加购率|退货取消率|付费推广天数|推广天数|暂无数据/;
+
+  /** 这段文本能不能当商品名（宁可判空也不要把促销标签/价格/插件浮层当名字） */
+  const okTitle = (t) => {
+    if (!t || t.length < 6 || t.length > 320) return false;
+    if (PRICEY.test(t) || t.indexOf('%') >= 0) return false;
+    if (LABEL.test(t) || DATE.test(t) || STOCK.test(t) || REVIEW.test(t) || UNIT_ONLY.test(t)) return false;
+    if (NOT_TITLE.test(t)) return false; // 选品插件浮层的字段串，绝不是商品名
+    if (!HAS_LETTER.test(t)) return false; // 纯数字/符号不算标题
+    if (/^\d+$/.test(t)) return false;
+    return true;
+  };
+
+  /**
+   * 从一段文本里取「现价」+ 币种符号：第一处货币符号前的数字就是现价。
+   * 中文/俄语小数都是逗号，千分位是空格 —— "25,13 ₽42,12 ₽-40%" → 25.13。
+   *
+   * ⚠️ 币种符号必须是「所有常见符号」而不是只认 ₽：实测用户的浏览器里价格显示成 **¥**
+   * （中文界面 + 货币符号被本地化/替换成 ¥，数值仍是卢布量级），原来只匹配 ₽ 导致价格全丢、
+   * 且价格串因为「不含 ₽」被当成商品名存进库（这就是商品名错误的直接原因）。
+   */
+  const parsePrice = (t) => {
+    const m = String(t || '').match(/(\d[\d\s\u00a0]*)(?:[.,](\d{1,2}))?\s*([₽¥$€])/);
+    if (!m) return { value: null, symbol: '' };
+    const whole = String(m[1]).replace(/[\s\u00a0]/g, '');
+    return { value: num(m[2] ? whole + '.' + m[2] : whole), symbol: m[3] };
+  };
 
   /*
    * 第三方选品插件（中卖搏通ERP 等）会把浮层 widget 注进商品卡片 DOM：
@@ -235,6 +281,48 @@ export function collectList() {
     return n !== null ? n : t;
   };
 
+  /** 读一个浮层容器里的 [data-s2-field-key] → {字段名: 值} */
+  const readPluginCard = (root) => {
+    const pc = {};
+    let rows;
+    try { rows = root.querySelectorAll('[data-s2-field-key]'); } catch (e) { return pc; }
+    for (let r = 0; r < rows.length; r++) {
+      const k = rows[r].getAttribute('data-s2-field-key');
+      if (!k || pc[k] !== undefined) continue;
+      const ve = rows[r].querySelector('.s2-widget-value');
+      let t = '';
+      if (k === 'rfbsCommission' && ve) {
+        // rFBS 佣金是三档标签（12% / 14% / 20%），直接拼会变成假数字，用 / 连接
+        const bands = ve.querySelectorAll('.s2-widget-rfbs-band');
+        if (bands.length) {
+          const parts = [];
+          for (let b = 0; b < bands.length; b++) parts.push(txt(bands[b].innerText || bands[b].textContent));
+          t = parts.join('/');
+        }
+      }
+      if (!t) t = ve ? (ve.innerText || ve.textContent) : (rows[r].innerText || rows[r].textContent || '');
+      t = txt(t);
+      if (!t) continue;
+      pc[k] = cardVal(k, t);
+    }
+    return pc;
+  };
+
+  /*
+   * 浮层不一定长在商品卡片里（有的选品插件渲染成独立浮层/侧栏），
+   * 所以先按 data-s2-ozon-sku 建一张全局索引，卡片里读不到时按 sku 兜底。
+   */
+  const widgetBySku = {};
+  try {
+    const wHosts = document.querySelectorAll('[data-s2-ozon-sku]');
+    for (let h = 0; h < wHosts.length; h++) {
+      const sk = String(wHosts[h].getAttribute('data-s2-ozon-sku') || '').replace(/\D/g, '');
+      if (!sk) continue;
+      const pc = readPluginCard(wHosts[h]);
+      if (Object.keys(pc).length) widgetBySku[sk] = pc;
+    }
+  } catch (e) { /* 没装插件就跳过 */ }
+
   const cards = document.querySelectorAll('div[class*="tile-root"]');
   for (let i = 0; i < cards.length; i++) {
     const card = cards[i];
@@ -249,32 +337,78 @@ export function collectList() {
     let imageUrl = imgEl ? (imgEl.getAttribute('src') || '') : '';
     if (imageUrl && imageUrl.indexOf('//') === 0) imageUrl = 'https:' + imageUrl;
 
-    let price = null;
-    let title = '';
-    let reviewsCount = null;
-    let rating = null;
-
+    // 先把卡片里所有候选文本收集出来（跳过第三方插件浮层里的文本）
     const els = card.querySelectorAll('span,div,a');
+    const cands = [];
     for (let j = 0; j < els.length; j++) {
       if (touchedByWidget(els[j])) continue; // 插件浮层里的文本一律不看
       const t = txt(els[j].textContent);
       if (!t || t.length > 400) continue;
+      cands.push({ t: t, cls: String(els[j].className || '') });
+    }
 
-      if (price === null) {
-        const pm = t.match(/^(\d[\d\s\u00a0]*)\s*₽$/);
-        if (pm) { price = num(pm[1]); continue; }
+    // ── 价格：优先 class 含 tsHeadline 的（Ozon 价格排版），否则取最短的含货币符号文本块
+    //    注意货币符号可能是 ₽ 也可能被本地化成 ¥（实测），所以两种都要认
+    let priceText = '';
+    for (let j = 0; j < cands.length; j++) {
+      if (/tsHeadline/i.test(cands[j].cls) && PRICEY.test(cands[j].t)) { priceText = cands[j].t; break; }
+    }
+    if (!priceText) {
+      for (let j = 0; j < cands.length; j++) {
+        const t = cands[j].t;
+        if (!PRICEY.test(t) || t.length > 60) continue;
+        if (!priceText || t.length < priceText.length) priceText = t;
       }
-      if (reviewsCount === null) {
-        const rm = t.match(/^(\d[\d\s\u00a0]*)\s*(отзыв|отзыва|отзывов)$/i);
-        if (rm) { reviewsCount = num(rm[1]); continue; }
+    }
+    const pp = parsePrice(priceText);
+    const price = pp.value;
+
+    // ── 评论数：俄语 "12 отзывов" / 中文 "12 条评论"
+    let reviewsCount = null;
+    for (let j = 0; j < cands.length; j++) {
+      const rm = cands[j].t.match(/^(\d[\d\s\u00a0]*)\s*(отзыв[а-яё]*|条评论|个评价|条评价|评论|评价)$/i);
+      if (rm) { reviewsCount = num(rm[1]); break; }
+    }
+    if (reviewsCount === null) {
+      for (let j = 0; j < cands.length; j++) {
+        if (/^(нет отзывов|暂无评论|还没有评论)$/i.test(cands[j].t)) { reviewsCount = 0; break; }
       }
-      if (rating === null) {
-        const am = t.match(/^(\d[.,]\d)\s*$/);
-        if (am) { rating = num(am[1].replace(',', '.')); continue; }
+    }
+
+    // ── 评分：卡片上的 "4,8" / "4.8"
+    let rating = null;
+    for (let j = 0; j < cands.length; j++) {
+      const am = cands[j].t.match(/^(\d[.,]\d)$/);
+      if (am) { rating = num(am[1]); break; }
+    }
+
+    /*
+     * ── 标题：按可信度依次取
+     *   ① 商品链接的 title / aria-label（Ozon 常给完整商品名）
+     *   ② 主图 alt（通常就是商品名，最稳）
+     *   ③ class 含 tsBody 的文本（Ozon 标题排版类），优先 500 号，再取最长
+     *   ④ 全卡兜底：取最长的「合格」文本（促销标签/价格/评论/日期都已被 okTitle 挡掉）
+     */
+    let title = '';
+    const linkTitle = txt(a.getAttribute('title') || a.getAttribute('aria-label') || '');
+    if (okTitle(linkTitle)) title = linkTitle;
+    if (!title && imgEl) {
+      const alt = txt(imgEl.getAttribute('alt') || '');
+      if (okTitle(alt)) title = alt;
+    }
+    if (!title) {
+      let best = '';
+      let bestScore = -1;
+      for (let j = 0; j < cands.length; j++) {
+        if (!/tsBody/i.test(cands[j].cls) || !okTitle(cands[j].t)) continue;
+        const sc = (/500/.test(cands[j].cls) ? 1000 : 0) + Math.min(cands[j].t.length, 300);
+        if (sc > bestScore) { bestScore = sc; best = cands[j].t; }
       }
-      // 标题：第一条够长、不含价格符号、不是标签/日期/评论/库存的文本
-      if (!title && t.length >= 6 && t.indexOf('₽') < 0 && !LABEL.test(t) && !DATE.test(t) && !STOCK.test(t) && !/отзыв/i.test(t)) {
-        title = t;
+      title = best;
+    }
+    if (!title) {
+      for (let j = 0; j < cands.length; j++) {
+        if (okTitle(cands[j].t) && cands[j].t.length > title.length) title = cands[j].t;
       }
     }
 
@@ -282,6 +416,8 @@ export function collectList() {
       sku,
       title: title || null,
       price,
+      // 抓到的币种符号（₽ / ¥ …）：只作诊断留档，数值一律按页面原值存，方便日后核对是否被本地化换算过
+      priceSymbol: pp.symbol || null,
       imageUrl: imageUrl || null,
       productUrl: href.indexOf('http') === 0 ? href : 'https://www.ozon.ru' + href,
       rating,
@@ -290,27 +426,8 @@ export function collectList() {
 
     // 卡片上若挂着选品插件的浮层（月销/佣金/类目等经营指标），有就一并带上报给后端
     try {
-      const pc = {};
-      const rows = card.querySelectorAll('[data-s2-field-key]');
-      for (let r = 0; r < rows.length; r++) {
-        const k = rows[r].getAttribute('data-s2-field-key');
-        if (!k || pc[k] !== undefined) continue;
-        const ve = rows[r].querySelector('.s2-widget-value');
-        let t = '';
-        if (k === 'rfbsCommission' && ve) {
-          // rFBS 佣金是三档标签（12% / 14% / 20%），直接拼会变成假数字，用 / 连接
-          const bands = ve.querySelectorAll('.s2-widget-rfbs-band');
-          if (bands.length) {
-            const parts = [];
-            for (let b = 0; b < bands.length; b++) parts.push(txt(bands[b].innerText || bands[b].textContent));
-            t = parts.join('/');
-          }
-        }
-        if (!t) t = ve ? (ve.innerText || ve.textContent) : (rows[r].innerText || rows[r].textContent || '');
-        t = txt(t);
-        if (!t) continue;
-        pc[k] = cardVal(k, t);
-      }
+      let pc = readPluginCard(card);
+      if (!Object.keys(pc).length && widgetBySku[sku]) pc = widgetBySku[sku];
       if (Object.keys(pc).length) item.pluginCard = pc;
     } catch (e) { /* 没装插件就跳过 */ }
 

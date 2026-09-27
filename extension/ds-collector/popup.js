@@ -110,8 +110,16 @@ $('collectList').onclick = async () => {
   if (!r.ok) alert(r.error || '采集失败');
   else if (r.result) {
     const x = r.result;
+    const c = x.coverage;
+    const covLine = c
+      ? `\n\n字段覆盖（共 ${x.total}）：\n` +
+        `  名称 ${c.title} · 价格 ${c.price} · 主图 ${c.image} · 评论 ${c.reviews}\n` +
+        `  经营指标 ${c.card}${c.card ? '' : '（无：月销/加购率/退货率/广告占比/上架天 需要中实ERP选品插件的浮层）'}\n` +
+        `  类目/品牌/发货 需点商品库的「补信息」用详情页补`
+      : '';
     alert(
       `抓到 ${x.total} 个商品\n新建 ${x.created} 个\n更新 ${x.updated} 个` +
+        covLine +
         (x.aborted ? `\n\n⚠️ 滚动中途页面出错（已停止），但已抓到并上传了 ${x.total} 个。\n原因：${x.aborted}` : ''),
     );
   }
