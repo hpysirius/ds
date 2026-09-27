@@ -262,6 +262,10 @@ model PricingRecord {
   retailUrl String? @db.VarChar(1000) // 跟卖链接
   remark    String? @db.VarChar(500)
 
+  // ---- 上架状态（在「定价记录」列表里直接上架 / 下架）----
+  listed   Boolean   @default(false) // 是否已上架
+  listedAt DateTime? // 最近一次上架时间
+
   // ---- 原定价表（Excel）里的列，保证「定价记录」与原表逐列对齐 ----
   mark       String? @db.VarChar(120) // 原表 A 列：序号/标记（如「可跨境铺货」「点评易损」）
   weightText String? @db.VarChar(40) // 原表 O 列原文（如 300g / 10.5kg / 130g）
@@ -295,6 +299,10 @@ model PricingSetting {
   // ---- 1688 登录态：从「浏览器接管」的调试 Chrome 同步一次，之后 1688 全部走纯 HTTP ----
   ali1688Cookie   String?   @db.Text
   ali1688CookieAt DateTime?
+
+  // ---- 1688 抓取出口代理：机房 IP 常被 1688 风控（x5secdata 滑块页），填了就走代理出口 ----
+  // 形如 http://user:pass@host:port ；留空 = 直连。只作用于 1688 请求，不影响其他外网请求。
+  ali1688Proxy String? @db.VarChar(500)
 
   updatedAt      DateTime @updatedAt
 

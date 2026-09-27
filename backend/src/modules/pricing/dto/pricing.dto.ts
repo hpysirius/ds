@@ -183,9 +183,24 @@ export class CreateRecordDto {
   @ApiPropertyOptional({ description: '尺寸原文，如 18.5cm * 7cm * 17cm' }) @IsOptional() @IsString() sizeText?: string;
   @ApiPropertyOptional({ description: '来源：workbench / excel' }) @IsOptional() @IsString() source?: string;
   @ApiPropertyOptional({ description: '来源定位：工作表!行号' }) @IsOptional() @IsString() excelRef?: string;
+
+  // ---- 上架状态 ----
+  @ApiPropertyOptional({ description: '是否已上架' }) @IsOptional() @IsBoolean() listed?: boolean;
 }
 
 export class UpdateRecordDto extends CreateRecordDto {}
+
+/** 上架 / 下架（支持批量：ids 传多条） */
+export class ListingDto {
+  @ApiProperty({ description: '定价记录 id 列表', type: [Number] })
+  @Type(() => Number)
+  @IsInt({ each: true })
+  ids: number[];
+
+  @ApiProperty({ description: 'true = 上架，false = 下架' })
+  @IsBoolean()
+  listed: boolean;
+}
 
 export class FillImagesDto {
   @ApiPropertyOptional({ description: '本次最多抓几张（用浏览器抓，每张约 10 秒，建议 5）' })
@@ -216,6 +231,12 @@ export class QueryRecordDto {
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() page?: number;
   @ApiPropertyOptional() @IsOptional() @Type(() => Number) @IsInt() pageSize?: number;
   @ApiPropertyOptional() @IsOptional() @IsString() keyword?: string;
+  // 注意：全局 ValidationPipe 开了 enableImplicitConversion，布尔型 query 会把 'false' 也转成 true，
+  // 所以这里用字符串接收，在 service 里再判。
+  @ApiPropertyOptional({ description: "按上架状态筛选：'true' 只看已上架 / 'false' 只看未上架 / 不传看全部" })
+  @IsOptional()
+  @IsIn(['true', 'false', '1', '0'])
+  listed?: string;
 }
 
 export class UpdateSettingDto {
@@ -230,6 +251,12 @@ export class UpdateSettingDto {
   @IsOptional() @Type(() => Number) @IsNumber() markupRate?: number;
   @ApiPropertyOptional() @IsOptional() @IsString() defaultCountry?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() defaultVendor?: string;
+  @ApiPropertyOptional({
+    description: '1688 抓取的出口代理，形如 http://user:pass@host:port；留空 = 直连（机房 IP 被风控时才需要）',
+  })
+  @IsOptional()
+  @IsString()
+  ali1688Proxy?: string;
 }
 
 /** 定价工作流：按渠道算运费 → 按「成本×(1+加价率)」规则反推建议定价 → 算利润 */

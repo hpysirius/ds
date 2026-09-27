@@ -10,6 +10,7 @@ import {
   OfferSku,
   SearchItem,
   cacheGet,
+  cacheGetStale,
   cacheSet,
   httpGet,
   isPunished,
@@ -448,6 +449,22 @@ export class SourcingService {
     return row?.ali1688Cookie || null;
   }
 
+  /**
+   * 1688 抓取的出口代理。优先级：环境变量 ALI1688_PROXY > 数据库 PricingSetting.ali1688Proxy。
+   * 只在机房 IP 被风控时才需要（表现为返回 600 字节的 x5secdata 滑块页）。
+   */
+  private async getProxy(): Promise<string | null> {
+    const env = (process.env.ALI1688_PROXY || '').trim();
+    if (env) return env;
+    try {
+      const row = await this.prisma.pricingSetting.findUnique({ where: { id: 1 } });
+      const v = (row as any)?.ali1688Proxy;
+      return v ? String(v).trim() : null;
+    } catch (e) {
+      return null; // 老库还没这个字段时不影响主流程
+    }
+  }
+
   async cookieStatus() {
     const row = await this.prisma.pricingSetting.findUnique({ where: { id: 1 } });
     const cookie = row?.ali1688Cookie || '';
@@ -542,6 +559,39 @@ export class SourcingService {
     }
   }
 
+  /**
+   * 命中 1688 滑块风控后的「人工解封」通道：
+   * 在接管的调试 Chrome 里打开验证页，由**用户本人**完成一次滑块，然后同步 Cookie 即可恢复。
+   * 注意这里刻意不做「自动过滑块」（打码平台 / 模拟轨迹）——那是绕过网站安全校验，不适合做进产品。
+   */
+  async openRiskPage(punishUrl?: string): Promise<{ ok: boolean; msg: string; url: string }> {
+    const url = punishUrl || 'https://www.1688.com/';
+    try {
+      await this.ensureBrowser();
+      const ver = await this.browser.version();
+      const cdp = new CdpClient(new URL(ver.webSocketDebuggerUrl));
+      await cdp.connect();
+      try {
+        await cdp.send('Target.createTarget', { url }, undefined, 10000);
+        return {
+          ok: true,
+          url,
+          msg: '已在调试 Chrome 里打开 1688 验证页：请手动完成一次滑块，再点「同步 1688 Cookie」，然后重新抓取。',
+        };
+      } finally {
+        try {
+          cdp.close();
+        } catch (e) {
+          /* ignore */
+        }
+      }
+    } catch (e: any) {
+      throw new BadRequestException(
+        `没能打开调试 Chrome（${e?.message || '未知原因'}）。可以手动打开这个链接完成滑块验证：${url}`,
+      );
+    }
+  }
+
   /** 手动粘贴 cookie（从 DevTools 复制 Cookie 请求头） */
   async saveCookie(raw: string) {
     const cookie = String(raw || '').trim();
@@ -625,9 +675,48 @@ export class SourcingService {
     const cached = cacheGet<OfferInfo>(ck, 30 * 60 * 1000);
     if (cached) return { ...cached, warnings: [...(cached.warnings || []), '（30 分钟内同一货品用缓存）'] };
     const cookie = await this.getCookie();
+    const proxy = await this.getProxy();
     const url = `https://detail.1688.com/offer/${offerId}.html`;
-    const res = await httpGet(url, { cookie, timeoutMs: 12000 });
-    if (res.punished) throw new BadRequestException('1688 触发了风控（滑块），等几分钟再试');
+    const res = await httpGet(url, { cookie, timeoutMs: 12000, proxy });
+    if (res.punished) {
+      markPunished();
+      // 兜底：本机/本机房 IP 被风控时，拿旧的缓存结果先顶上，总比直接报错强
+      const stale = cacheGetStale<OfferInfo>(ck);
+      if (stale) {
+        return {
+          ...stale,
+          warnings: [
+            ...(stale.warnings || []),
+            '⚠ 本次 1688 请求命中风控，下面是缓存的旧数据（可能已过期）',
+          ],
+        };
+      }
+      /*
+       * 惩罚页有两种，必须区分，因为解法完全不同：
+       *  - action=captcha（x5step=1，带 _____tmd_____/punish）：给滑块，真人过一次就能解封
+       *  - action=deny + cloud_ip_bl：云机房 IP 段被整体拉黑，**连滑块都不给**，
+       *    只能换出口 IP（住宅代理 / 回退到本机家庭宽带）。
+       */
+      const isIpBan = /cloud_ip_bl|action=deny/.test(res.body);
+      // 惩罚页里带了跳转去验证的地址：JS 跳转、a-link 锚点、或 _____tmd_____ 链接，三种形态都兼容
+      const punishM =
+        res.body.match(/window\.location\.replace\(['"]([^'"]+)['"]\)/) ||
+        res.body.match(/<a[^>]+id="a-link"[^>]+href="([^"]+)"/) ||
+        res.body.match(/(https?:\/\/[^'"\s]*_____tmd_____[^'"\s]*)/);
+      const punishUrl = punishM ? String(punishM[1]).replace(/\\\//g, '/') : null;
+      throw new BadRequestException({
+        code: 'ALI_RISK',
+        riskKind: isIpBan ? 'IP_BAN' : 'CAPTCHA',
+        punishUrl,
+        message: isIpBan
+          ? proxy
+            ? '1688 把这个出口 IP 段整体拉黑了（cloud_ip_bl），连滑块都不给：换一个住宅代理出口再试'
+            : '1688 把云服务器的机房 IP 段整体拉黑了（cloud_ip_bl），连滑块都不给：请改用本机出口或配住宅代理'
+          : proxy
+            ? '1688 对当前出口 IP 要求滑块验证（换 IP 后仍被判定风险）'
+            : '1688 要求真人完成一次滑块验证：过一次就能恢复抓取',
+      });
+    }
     if (res.status !== 200) throw new BadRequestException(`1688 货品页返回 HTTP ${res.status}`);
     const d = parseOfferHtml(res.body, offerId);
     if (!d.title && d.price == null && !d.fromPackInfo) return null;
@@ -1653,22 +1742,40 @@ export class SourcingService {
    */
   async fetchOffer(offerUrl: string, allowBrowser = false): Promise<OfferInfo> {
     let httpErr: any = null;
+    let hitRisk = false;
     try {
       const fast = await this.fetchOfferHttp(offerUrl);
       if (fast && (fast.price != null || fast.fromPackTab)) return fast;
       if (fast) {
         fast.warnings.push('HTTP 只读到部分信息（价格或包装信息缺一项），可手动补填');
-        if (!allowBrowser) return fast;
         return fast;
       }
     } catch (e: any) {
       httpErr = e;
+      const payload: any = e?.getResponse?.() ?? e?.response ?? {};
+      hitRisk = payload?.code === 'ALI_RISK' || /风控|滑块/.test(String(e?.message || ''));
     }
-    if (!allowBrowser) {
-      if (httpErr) throw httpErr;
-      throw new BadRequestException('没能从 1688 页面读出价格/包装信息，请检查链接或手动补填');
+    /*
+     * HTTP 命中风控时值得一试浏览器：真实 Chrome 有完整的 TLS/JA3、HTTP/2、canvas 指纹，
+     * 还带着真实登录态，抗风控能力远强于 Node 直连。服务器上没接管浏览器会直接失败，
+     * 那就还是抛原始错误给前端（前端会再回退到用户本机）。
+     */
+    if (hitRisk || allowBrowser) {
+      try {
+        const byBrowser = await Promise.race([
+          this.fetchOfferByBrowser(offerUrl),
+          new Promise<null>((_r, rej) => setTimeout(() => rej(new Error('浏览器兜底超时')), 60000)),
+        ]);
+        if (byBrowser && (byBrowser.price != null || byBrowser.weightG != null)) {
+          byBrowser.warnings = [...(byBrowser.warnings || []), '（HTTP 被 1688 风控，已改用浏览器抓取）'];
+          return byBrowser;
+        }
+      } catch (e) {
+        /* 浏览器也没戏，下面抛原始 HTTP 错误 */
+      }
     }
-    return this.fetchOfferByBrowser(offerUrl);
+    if (httpErr) throw httpErr;
+    throw new BadRequestException('没能从 1688 页面读出价格/包装信息，请检查链接或手动补填');
   }
 
   /**

@@ -24,7 +24,7 @@ import {
   message,
 } from 'antd';
 import { CopyOutlined, LinkOutlined, SaveOutlined, SearchOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { API_BASE, http } from '@/lib/api';
+import { API_BASE, http, postSourcing, probeLocalApi } from '@/lib/api';
 
 const COUNTRIES = [
   { value: 'RU', label: '俄罗斯' },
@@ -72,6 +72,9 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   const [resultOpen, setResultOpen] = useState(false);
   const [fetchingOffer, setFetchingOffer] = useState(false);
   const [offer, setOffer] = useState<any>(null);
+  // 线上机房 IP 被 1688 风控时会自动改用「本机后端」抓取，这里用来给用户一个明确提示
+  const [viaLocal, setViaLocal] = useState(false);
+  const [localReady, setLocalReady] = useState<boolean | null>(null);
   const [skuId, setSkuId] = useState<string | null>(null);
   const [tabs, setTabs] = useState<string[]>([]);
   const [searchKw, setSearchKw] = useState('');
@@ -102,6 +105,15 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
       markupRate: Number(((settings.markupRate ?? 0.1) * 100).toFixed(2)),
     });
   }, [settings, form]);
+
+  // 线上部署时探测一次「本机后端」是否可用：它在的话，1688 被风控后还能自动回退到家庭宽带出口
+  useEffect(() => {
+    if (/localhost|127\.0\.0\.1/.test(API_BASE)) {
+      setLocalReady(null);
+      return;
+    }
+    probeLocalApi().then((ok) => setLocalReady(ok));
+  }, []);
 
   const loadCookieStatus = async () => {
     try {
@@ -172,7 +184,8 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     }
     setSearching(true);
     try {
-      const { data } = await http.post('/pricing/sourcing/search-keyword', { keyword });
+      const { data, via } = await postSourcing<any>('/pricing/sourcing/search-keyword', { keyword });
+      if (via === 'local') setViaLocal(true);
       (data?.warnings || []).forEach((w: string) => message.warning(w));
       const items = data?.items || [];
       if (items.length) {
@@ -419,7 +432,8 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     }
     setFetchingOffer(true);
     try {
-      const { data } = await http.post('/pricing/sourcing/offer', { url });
+      const { data, via } = await postSourcing<any>('/pricing/sourcing/offer', { url });
+      if (via === 'local') setViaLocal(true);
       setOffer(data);
       setSkuId(null);
       if (data?.title) form.setFieldsValue({ offer1688Title: data.title });
@@ -437,7 +451,88 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
         }`,
       );
     } catch (e: any) {
-      message.error(e.message);
+      const isRisk = e?.response?.data?.code === 'ALI_RISK' || /风控|滑块/.test(String(e?.message || ''));
+      if (isRisk) {
+        const punishUrl: string | null = e?.response?.data?.punishUrl || null;
+        // 机房 IP 被整体拉黑 vs 只要求滑块：两种情况解法完全不同，必须分开讲
+        const isIpBan = e?.response?.data?.riskKind === 'IP_BAN';
+        // 明确告诉用户「为什么」和「怎么办」，而不是只抛一句看不懂的报错
+        Modal.info({
+          title: isIpBan ? '1688 把这个机房 IP 段拉黑了（cloud_ip_bl）' : '1688 要求滑块验证（风控）',
+          width: 600,
+          content: (
+            <div style={{ fontSize: 13, lineHeight: 1.9 }}>
+              <p style={{ margin: '0 0 8px' }}>
+                {isIpBan ? (
+                  <>
+                    惩罚页里带 <code>cloud_ip_bl</code> + <code>action=deny</code>：云服务器的机房 IP
+                    段被整体拉黑，<b>连滑块机会都不给</b>，所以「等几分钟」不会恢复，换 UA / 补全请求头也没用。
+                  </>
+                ) : (
+                  <>
+                    1688 对这个出口 IP 要求<b>真人滑块验证</b>（<code>_____tmd_____/punish</code> 页）。
+                    换 UA、补全请求头都没用 —— 那是伪造指纹，这里是 IP + 行为信誉。
+                  </>
+                )}
+              </p>
+              <p style={{ margin: '0 0 8px' }}>按推荐顺序：</p>
+              <ol style={{ margin: 0, paddingLeft: 20 }}>
+                {!isIpBan ? (
+                  <li>
+                    <b>完成一次滑块（最管用）</b>：下面按钮会在调试 Chrome 里打开验证页，你手动滑一下，
+                    再点页面上的「同步 1688 Cookie」，之后就能正常抓了。没有调试 Chrome 就复制链接到自己浏览器打开。
+                  </li>
+                ) : null}
+                <li>
+                  <b>{isIpBan ? '改用本机出口（推荐，免费）' : '改用本机出口'}</b>：本机启动 ds 后端（
+                  <code>bash restart.sh</code>），
+                  线上页面会自动改用你本机的家庭宽带出口 —— 机房 IP 的基线信誉本来就差。
+                  另外别连着猛点，短时间高频请求也会触发。
+                </li>
+                <li>
+                  <b>换出口 IP</b>：国内住宅代理配到服务器环境变量{' '}
+                  <code>ALI1688_PROXY=http://user:pass@host:port</code>
+                  （注意：机房代理 IP 一样会被 <code>cloud_ip_bl</code> 拦，必须是住宅/家宽出口）。
+                </li>
+                <li>
+                  <b>手动填</b>：直接按 1688 页面上的价格/尺寸手填采购成本。
+                </li>
+              </ol>
+              {!isIpBan ? (
+              <Space style={{ marginTop: 10 }}>
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={async () => {
+                    try {
+                      const r = await postSourcing<any>('/pricing/sourcing/open-risk-page', { punishUrl });
+                      message.success(r?.data?.msg || '已打开，请完成滑块后再同步 Cookie');
+                    } catch (e2: any) {
+                      message.error(e2.message);
+                    }
+                  }}
+                >
+                  用调试 Chrome 打开验证页
+                </Button>
+                <Button
+                  size="small"
+                  disabled={!punishUrl}
+                  onClick={() => {
+                    if (!punishUrl) return;
+                    navigator.clipboard?.writeText(punishUrl);
+                    message.success('验证链接已复制，粘到浏览器打开完成滑块');
+                  }}
+                >
+                  复制验证链接
+                </Button>
+              </Space>
+              ) : null}
+            </div>
+          ),
+        });
+      } else {
+        message.error(e.message);
+      }
     } finally {
       setFetchingOffer(false);
     }
@@ -516,7 +611,8 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
       }
       setSearchKw(kw);
       log(`用关键词「${kw}」搜 1688 同款（纯 HTTP）…`);
-      const { data: s } = await http.post('/pricing/sourcing/search-keyword', { keyword: kw });
+      const { data: s, via: viaS } = await postSourcing<any>('/pricing/sourcing/search-keyword', { keyword: kw });
+      if (viaS === 'local') setViaLocal(true);
       (s?.warnings || []).forEach((w: string) => log('⚠ ' + w));
       const items = s?.items || [];
       if (!items.length) {
@@ -533,7 +629,11 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
 
       // 3. 抓货品（价格 + 包装信息 + 规格 + 另需运费）
       log('打开 1688 货品页抓取价格与包装信息…');
-      const { data: of } = await http.post('/pricing/sourcing/offer', { url: first.offerUrl });
+      const { data: of, via: viaO } = await postSourcing<any>('/pricing/sourcing/offer', { url: first.offerUrl });
+      if (viaO === 'local') {
+        setViaLocal(true);
+        log('ℹ 线上机房 IP 被 1688 风控，已自动改用本机出口抓取');
+      }
       setOffer(of);
       setSkuId(null);
       if (of?.title) form.setFieldsValue({ offer1688Title: of.title });
@@ -577,23 +677,67 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     }
   };
 
+  /**
+   * 插件从 1688 页面带过来的数据（/pricing?...&dsfill=1&cost=&wt=&l=&w=&h=&supply=&stitle=）。
+   * 必须是「最后」写入 —— 前面 pickProduct 会先用商品库的值填一遍表单，回填值要覆盖它。
+   */
+  const applyPluginFill = useCallback((params: URLSearchParams) => {
+    const num = (k: string) => {
+      const v = params.get(k);
+      if (v == null || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const patch: any = {};
+    const cost = num('cost');
+    const wt = num('wt');
+    const l = num('l');
+    const w = num('w');
+    const h = num('h');
+    if (cost != null) patch.purchaseCost = cost;
+    if (wt != null) {
+      patch.weightKg = wt;
+      patch.weightSource = '1688（插件采集）';
+    }
+    if (l != null) patch.lengthCm = l;
+    if (w != null) patch.widthCm = w;
+    if (h != null) patch.heightCm = h;
+    const supply = params.get('supply');
+    const stitle = params.get('stitle');
+    if (supply) patch.supplyUrl = supply;
+    if (stitle) patch.offer1688Title = stitle;
+    if (!Object.keys(patch).length) return;
+    form.setFieldsValue(patch);
+    const bits: string[] = [];
+    if (cost != null) bits.push(`采购成本 ¥${cost}`);
+    if (wt != null) bits.push(`${wt}kg`);
+    if (l != null && w != null && h != null) bits.push(`${l}×${w}×${h}cm`);
+    message.success(`已从 1688 插件回填：${bits.join(' · ')}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form]);
+
   /** 从商品库跳过来时（/pricing?sku=xxx[&auto=1]）自动带出商品，带 auto=1 时自动跑一遍 */
   useEffect(() => {
     if (booted || !settings) return;
     const params = new URLSearchParams(window.location.search);
     const sku = params.get('sku');
-    if (!sku) return;
+    const isFill = params.get('dsfill') === '1';
+    if (!sku && !isFill) return;
     setBooted(true);
     (async () => {
       try {
-        const { data } = await http.get('/pricing/products', { params: { keyword: sku, limit: 5 } });
-        const p = (data || []).find((x: any) => x.sku === sku) || (data || [])[0];
-        if (!p) {
-          message.warning(`商品库里没有 SKU ${sku}`);
-          return;
+        if (sku) {
+          const { data } = await http.get('/pricing/products', { params: { keyword: sku, limit: 5 } });
+          const p = (data || []).find((x: any) => x.sku === sku) || (data || [])[0];
+          if (!p) {
+            message.warning(`商品库里没有 SKU ${sku}`);
+          } else {
+            pickProduct(p);
+            // 插件已经把 1688 数据带来了，就别再自动跑一遍（那会重新抓一次 1688 覆盖掉）
+            if (params.get('auto') === '1' && !isFill) await autoRun(p);
+          }
         }
-        pickProduct(p);
-        if (params.get('auto') === '1') await autoRun(p);
+        if (isFill) applyPluginFill(params);
       } catch (e: any) {
         message.error(e.message);
       }
@@ -848,6 +992,20 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
                 </Form.Item>
               </Col>
             </Row>
+            {localReady !== null || viaLocal ? (
+              <div style={{ fontSize: 12, marginTop: -6, marginBottom: 8, color: viaLocal ? '#389e0d' : '#8c8c8c' }}>
+                {viaLocal ? (
+                  <>✅ 线上机房 IP 被 1688 风控，已自动改用<b>本机出口</b>抓取成功。</>
+                ) : localReady ? (
+                  <>本机后端已就绪：线上抓取被 1688 风控时会自动改用本机家庭宽带出口。</>
+                ) : (
+                  <>
+                    ⚠ 未检测到本机后端。线上机房 IP 易被 1688 风控，建议本机跑一套（<code>bash restart.sh</code>
+                    ）作为备用抓取出口。
+                  </>
+                )}
+              </div>
+            ) : null}
             {offer?.skus?.length ? (
               <Row gutter={12} style={{ marginTop: -8 }}>
                 <Col span={16}>

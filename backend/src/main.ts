@@ -18,9 +18,20 @@ async function bootstrap() {
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
   // CORS
-  const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3100')
-    .split(',')
-    .map((s) => s.trim());
+  /*
+   * 允许的来源 = FRONTEND_URL + 线上站点地址 + EXTRA_CORS_ORIGINS。
+   * 线上那一条是给「本地抓取回退」用的：在线上页面（http://114.132.99.141）里操作核价时，
+   * 如果线上机房 IP 被 1688 风控，前端会直接请求用户本机的后端（http://localhost:3101）
+   * 来抓 1688 —— 本机出口是家庭宽带，不会命中风控。这时浏览器 origin 是线上地址，
+   * 所以本地后端必须放行它，否则会被 CORS 拦掉。
+   */
+  const allowedOrigins = [
+    ...(process.env.FRONTEND_URL || 'http://localhost:3100').split(','),
+    ...(process.env.PUBLIC_SITE_URL || 'http://114.132.99.141').split(','),
+    ...(process.env.EXTRA_CORS_ORIGINS || '').split(','),
+  ]
+    .map((s) => s.trim())
+    .filter(Boolean);
   /*
    * Chrome 的「Private Network Access」(PNA)：扩展（chrome-extension:// 源）请求 localhost 属于
    * 访问私有网络，除普通 CORS 头外还要求服务端返回 `Access-Control-Allow-Private-Network: true`，

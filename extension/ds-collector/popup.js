@@ -127,5 +127,124 @@ $('stop').onclick = async () => {
   await refresh();
 };
 
+/* ─────────────── 1688 采集 → 回填核价页 ─────────────── */
+
+let supply1688 = null; // 最近一次抓到的 1688 货品数据
+
+/** 规格下拉里的一行：名称 + 价格 + 重量 + 尺寸 */
+function fmtSku(s) {
+  const bits = [];
+  if (s.price != null) bits.push('¥' + s.price);
+  if (s.weightG != null) bits.push((s.weightG / 1000).toFixed(3) + 'kg');
+  if (s.lengthCm && s.widthCm && s.heightCm) bits.push(`${s.lengthCm}×${s.widthCm}×${s.heightCm}`);
+  const tail = bits.length ? ' — ' + bits.join(' · ') : '';
+  return (s.name || '默认') + tail;
+}
+
+/** 把某个规格的数值写进下面那排输入框（成本 = 规格价 + 另需运费） */
+function applySkuToForm(s) {
+  if (!s) return;
+  const fr = supply1688 && supply1688.freightYuan != null && $('addFreight').checked ? Number(supply1688.freightYuan) : 0;
+  if (s.price != null) $('fCost').value = Number((Number(s.price) + fr).toFixed(2));
+  if (s.weightG != null) $('fWt').value = Number((Number(s.weightG) / 1000).toFixed(4));
+  if (s.lengthCm != null) $('fL').value = s.lengthCm;
+  if (s.widthCm != null) $('fW').value = s.widthCm;
+  if (s.heightCm != null) $('fH').value = s.heightCm;
+  $('fFr').value = supply1688 && supply1688.freightYuan != null ? supply1688.freightYuan : '';
+}
+
+function showFillInfo(html) {
+  const el = $('fillInfo');
+  el.style.display = html ? 'block' : 'none';
+  el.innerHTML = html || '';
+}
+
+$('grab1688').onclick = async () => {
+  const btn = $('grab1688');
+  btn.disabled = true;
+  btn.textContent = '抓 1688 中…';
+  try {
+    const r = await send({ type: 'DS_COLLECT_1688' });
+    if (!r.ok) throw new Error(r.error || '采集失败');
+    supply1688 = r.result;
+    const skus = supply1688.skus || [];
+    $('skuSel').innerHTML = skus.map((s, i) => `<option value="${i}">${escapeHtml(fmtSku(s))}</option>`).join('');
+    // 默认选最便宜的那个（通常是单件最低配）
+    let idx = 0;
+    let best = Infinity;
+    skus.forEach((s, i) => {
+      if (s.price != null && s.price < best) {
+        best = s.price;
+        idx = i;
+      }
+    });
+    $('skuSel').value = String(idx);
+    applySkuToForm(skus[idx]);
+    const w = supply1688.warnings || [];
+    showFillInfo(
+      `<div><b>${escapeHtml((supply1688.title || '').slice(0, 40))}</b></div>` +
+        `<div style="margin-top:3px">抓到 ${skus.length} 个规格${
+          supply1688.freightYuan != null ? ` · 另需运费 ¥${supply1688.freightYuan}` : ''
+        }</div>` +
+        (w.length ? `<div style="margin-top:3px;color:#d97706">⚠ ${w.map(escapeHtml).join('；')}</div>` : ''),
+    );
+  } catch (e) {
+    showFillInfo(`<div style="color:#dc2626">${escapeHtml(e.message)}</div>`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '抓当前 1688 页';
+  }
+};
+
+$('skuSel').onchange = () => {
+  const skus = (supply1688 && supply1688.skus) || [];
+  applySkuToForm(skus[Number($('skuSel').value)]);
+};
+
+// 勾上/取消「加运费」时重算成本
+$('addFreight').onchange = () => {
+  const skus = (supply1688 && supply1688.skus) || [];
+  applySkuToForm(skus[Number($('skuSel').value)]);
+};
+
+$('fillBtn').onclick = async () => {
+  const url = $('target').value.trim();
+  if (!url) {
+    alert('请先填核价页地址，例如 http://114.132.99.141/pricing?sku=5611145930');
+    return;
+  }
+  const btn = $('fillBtn');
+  btn.disabled = true;
+  btn.textContent = '回填中…';
+  try {
+    await chrome.storage.local.set({ pricingUrl: url });
+    const r = await send({
+      type: 'DS_FILL_PRICING',
+      url,
+      data: {
+        purchaseCost: $('fCost').value,
+        weightKg: $('fWt').value,
+        lengthCm: $('fL').value,
+        widthCm: $('fW').value,
+        heightCm: $('fH').value,
+        supplyUrl: supply1688 ? supply1688.offerUrl : '',
+        title: supply1688 ? supply1688.title : '',
+      },
+    });
+    if (!r.ok) throw new Error(r.error || '回填失败');
+    showFillInfo('<div style="color:#16a34a">✓ 已回填，核价页已打开/刷新</div>');
+  } catch (e) {
+    showFillInfo(`<div style="color:#dc2626">${escapeHtml(e.message)}</div>`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '回填到核价页';
+  }
+};
+
+// 记住上次填的核价页地址（和 api 一样，别被定时刷新冲掉）
+chrome.storage.local.get(['pricingUrl']).then((s) => {
+  if (s.pricingUrl) $('target').value = s.pricingUrl;
+});
+
 refresh();
 timer = setInterval(refresh, 2000);

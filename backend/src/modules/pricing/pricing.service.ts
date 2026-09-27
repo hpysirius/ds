@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CHANNEL_SEED } from './channels.data';
 import {
@@ -165,6 +165,8 @@ export class PricingService {
       markupRate: num(row.markupRate),
       defaultCountry: row.defaultCountry,
       defaultVendor: row.defaultVendor,
+      ali1688Proxy: (row as any).ali1688Proxy || '',
+      ali1688ProxyFromEnv: !!(process.env.ALI1688_PROXY || '').trim(),
     };
   }
 
@@ -510,6 +512,9 @@ export class PricingService {
         { remark: { contains: query.keyword } },
       ];
     }
+    // 只看已上架 / 未上架（query.listed 是字符串 'true'/'false'）
+    if (query.listed === 'true' || query.listed === '1') where.listed = true;
+    else if (query.listed === 'false' || query.listed === '0') where.listed = false;
     const [rows, total] = await Promise.all([
       this.prisma.pricingRecord.findMany({
         where,
@@ -546,6 +551,8 @@ export class PricingService {
       markup35: num(r.markup35),
       markupRate: num(r.markupRate),
       weightG: r2(num(r.weightKg) * 1000),
+      listed: !!r.listed,
+      listedAt: r.listedAt || null,
     };
   }
 
@@ -610,6 +617,8 @@ export class PricingService {
       sizeText: dto.sizeText ?? null,
       source: dto.source ?? 'workbench',
       excelRef: dto.excelRef ?? null,
+      listed: dto.listed === true,
+      listedAt: dto.listed === true ? new Date() : null,
       userId: userId ?? null,
     };
     const data = this.recompute(base);
@@ -727,6 +736,53 @@ export class PricingService {
     };
   }
 
+  /** 定价记录里「数据库真实存在」的字段白名单（fmtRecord 会派生 weightG 等非列字段，写回会报错） */
+  private static readonly RECORD_FIELDS = [
+    'name',
+    'sku',
+    'purchaseCost',
+    'weightKg',
+    'lengthCm',
+    'widthCm',
+    'heightCm',
+    'sellPrice',
+    'sellPriceRub',
+    'exchangeRate',
+    'labelFee',
+    'commissionRate',
+    'agentRate',
+    'withdrawRate',
+    'country',
+    'vendor',
+    'channelId',
+    'channelName',
+    'shipMode',
+    'logistics',
+    'shippingFee',
+    'billWeightKg',
+    'supplyUrl',
+    'retailUrl',
+    'remark',
+    'markupRate',
+    'imageUrl',
+    'categoryPath',
+    'offer1688Title',
+    'weightSource',
+    'mark',
+    'weightText',
+    'sizeText',
+    'source',
+    'excelRef',
+    'listed',
+    'listedAt',
+  ];
+
+  private pickRecordFields(src: any) {
+    const out: any = {};
+    for (const k of PricingService.RECORD_FIELDS) if (src[k] !== undefined) out[k] = src[k];
+    return out;
+  }
+
   async updateRecord(id: number, dto: UpdateRecordDto) {
     const exists = await this.prisma.pricingRecord.findUnique({ where: { id } });
     if (!exists) throw new NotFoundException('核价记录不存在');
@@ -734,11 +790,11 @@ export class PricingService {
     for (const [k, v] of Object.entries(dto)) {
       if (v !== undefined) merged[k] = v;
     }
-    delete merged.id;
-    delete merged.createdAt;
-    delete merged.updatedAt;
-    delete merged.userId;
-    const data = this.recompute(merged);
+    // 上架状态变了，顺手维护上架时间（重复置为已上架不刷新时间）
+    if (dto.listed !== undefined) {
+      merged.listedAt = dto.listed ? (exists.listedAt ?? new Date()) : null;
+    }
+    const data = this.recompute(this.pickRecordFields(merged));
     const row = await this.prisma.pricingRecord.update({ where: { id }, data });
     // 编辑时改了货源链接也同步回商品库
     if (exists.sku && dto.supplyUrl) {
@@ -747,6 +803,37 @@ export class PricingService {
         .catch(() => undefined);
     }
     return this.fmtRecord(row);
+  }
+
+  /**
+   * 上架 / 下架（支持批量）。
+   * 上架：listed = true 并记 listedAt（已经是已上架的不刷新时间）；下架：listed = false 并清 listedAt。
+   */
+  async setListing(ids: number[], listed: boolean) {
+    const list = (Array.isArray(ids) ? ids : [])
+      .map((n) => Number(n))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    if (!list.length) throw new BadRequestException('请先选择要上架/下架的记录');
+
+    const now = new Date();
+    if (listed) {
+      await this.prisma.pricingRecord.updateMany({
+        where: { id: { in: list }, listed: false },
+        data: { listed: true, listedAt: now },
+      });
+      // 历史数据里已上架但没时间的，补一个
+      await this.prisma.pricingRecord.updateMany({
+        where: { id: { in: list }, listed: true, listedAt: null },
+        data: { listedAt: now },
+      });
+    } else {
+      await this.prisma.pricingRecord.updateMany({
+        where: { id: { in: list } },
+        data: { listed: false, listedAt: null },
+      });
+    }
+    const count = await this.prisma.pricingRecord.count({ where: { id: { in: list }, listed } });
+    return { ids: list, listed, count };
   }
 
   async removeRecord(id: number) {
@@ -785,6 +872,8 @@ export class PricingService {
       '尺寸(原文)',
       '来源',
       '原表位置',
+      '上架状态',
+      '上架时间',
     ];
     const esc = (v: any) => {
       const s = v == null ? '' : String(v);
@@ -816,8 +905,12 @@ export class PricingService {
           r.supplyUrl || '',
           num(r.markupRate),
           r.offer1688Title || '',
+          r.weightText || '',
+          r.sizeText || '',
           r.source || '',
           r.excelRef || '',
+          r.listed ? '已上架' : '未上架',
+          r.listedAt ? new Date(r.listedAt).toISOString().slice(0, 19).replace('T', ' ') : '',
         ]
           .map(esc)
           .join(','),

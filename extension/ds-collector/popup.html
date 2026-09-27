@@ -56,6 +56,23 @@
       .dot { display: inline-block; width: 7px; height: 7px; border-radius: 99px; background: var(--muted); margin-right: 5px; }
       .dot.on { background: var(--ok); }
       .dot.off { background: var(--err); }
+      .sep {
+        margin: 12px 0 8px; padding-top: 10px; border-top: 1px solid var(--line);
+        font-size: 12px; font-weight: 600; color: var(--fg);
+      }
+      select.sel {
+        flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line);
+        border-radius: 6px; font-size: 12px; background: #fff; outline: none;
+      }
+      .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+      .grid label { font-size: 11px; color: var(--muted); display: block; }
+      .grid input {
+        width: 100%; min-width: 0; padding: 5px 6px; border: 1px solid var(--line);
+        border-radius: 6px; font-size: 12px; outline: none; margin-top: 2px;
+      }
+      .grid input:focus { border-color: var(--primary); }
+      .ck { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+      .ck input { margin: 0; }
     </style>
   </head>
   <body>
@@ -104,6 +121,44 @@
       <div class="hint">
         <b>采集当前列表页</b>：在 highlight/搜索/类目页上用，抓整页商品并往下滚几屏（右侧数字），新商品自动入库<br />
         <b>补详情(批量)</b>：给库里缺类目/主图/价格的商品逐条补详情页信息
+      </div>
+
+      <div class="sep">1688 回填核价页</div>
+
+      <div class="row">
+        <input id="target" type="text" placeholder="核价页地址 http://114.132.99.141/pricing?sku=xxx" />
+      </div>
+
+      <div class="row">
+        <button id="grab1688" class="primary" style="flex:1">抓当前 1688 页</button>
+      </div>
+
+      <div class="row">
+        <select id="skuSel" class="sel"><option value="">（先点上面的抓取）</option></select>
+      </div>
+
+      <div class="grid">
+        <label>成本 ¥<input id="fCost" type="number" step="0.01" /></label>
+        <label>重量 kg<input id="fWt" type="number" step="0.001" /></label>
+        <label>长 cm<input id="fL" type="number" step="0.1" /></label>
+        <label>宽 cm<input id="fW" type="number" step="0.1" /></label>
+        <label>高 cm<input id="fH" type="number" step="0.1" /></label>
+        <label>运费 ¥<input id="fFr" type="number" step="0.1" /></label>
+      </div>
+
+      <div class="row" style="margin-top:6px">
+        <label class="ck"><input id="addFreight" type="checkbox" checked /> 成本里加上另需运费</label>
+      </div>
+
+      <div class="row">
+        <button id="fillBtn" class="primary" style="flex:1">回填到核价页</button>
+      </div>
+
+      <div class="status" id="fillInfo" style="display:none"></div>
+
+      <div class="hint">
+        在 <b>1688 货品页</b>点「抓当前 1688 页」，选规格后可微调数值，再点「回填到核价页」——
+        会自动打开/刷新你填的地址，并把成本、重量、长宽高填进表单。
       </div>
     </div>
     <script src="popup.js"></script>

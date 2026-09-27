@@ -10,6 +10,7 @@ import {
   KeywordSearchDto,
   FillImagesDto,
   ImportExcelDto,
+  ListingDto,
   OfferFetchDto,
   SaveCookieDto,
   PriceDto,
@@ -148,6 +149,13 @@ export class PricingController {
   }
 
   @Public()
+  @Post('sourcing/open-risk-page')
+  @ApiOperation({ summary: '1688 命中滑块风控时：在调试 Chrome 打开验证页，由真人完成一次滑块后同步 cookie 恢复' })
+  openRiskPage(@Body() dto: any) {
+    return this.sourcingService.openRiskPage(dto?.punishUrl);
+  }
+
+  @Public()
   @Post('sourcing/cookie')
   @ApiOperation({ summary: '手动粘贴 1688 Cookie' })
   saveCookie(@Body() dto: SaveCookieDto) {
@@ -282,6 +290,13 @@ export class PricingController {
   @ApiOperation({ summary: '修改核价记录' })
   updateRecord(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateRecordDto) {
     return this.pricingService.updateRecord(id, dto);
+  }
+
+  @ApiBearerAuth()
+  @Post('records/listing')
+  @ApiOperation({ summary: '上架 / 下架核价记录（ids 支持批量）' })
+  setListing(@Body() dto: ListingDto) {
+    return this.pricingService.setListing(dto.ids, dto.listed);
   }
 
   @ApiBearerAuth()

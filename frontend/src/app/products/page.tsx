@@ -31,6 +31,9 @@ export default function ProductsPage() {
   const [selected, setSelected] = useState<number[]>([]);
   const [deleting, setDeleting] = useState(false);
 
+  /** 卢布→人民币 汇率（1₽=¥），默认 0.0862，从定价设置读取当前值 */
+  const [rate, setRate] = useState(0.0862);
+
   /** 删除失败时给出人话提示（未登录要单独说，否则只看到一句 Unauthorized） */
   const delError = (e: any, what: string) => {
     const status = e?.response?.status;
@@ -186,18 +189,44 @@ export default function ProductsPage() {
     }
   };
 
+  /** 读取定价设置里的卢布→人民币汇率，用于把商品价（₽）换算成人民币显示 */
+  const loadRate = async () => {
+    try {
+      const { data } = await http.get('/pricing/settings');
+      setRate(Number(data.exchangeRate) || 0.0862);
+    } catch (e) {
+      /* 读不到就用默认汇率，不影响列表 */
+    }
+  };
+
   useEffect(() => {
     load(1, 20);
     loadCategories();
+    loadRate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const exportCsv = () => {
-    const head = ['SKU', '标题', '类目', '品牌', '月销', '上架天', '加购%', '退货%', '评论', '广告%', '发货', '链接'];
+    const head = ['SKU', '标题', '类目', '品牌', '月销', '上架天', '加购%', '退货%', '评论', '广告%', '发货', '价格(₽)', '人民币(¥)', '链接'];
     const q = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
     const lines = [head.join(',')].concat(
       list.map((p) =>
-        [p.sku, p.title, p.category3Name, p.brand, p.soldCount, p.createDays, p.convToCartPdp, p.cancelRate, p.reviewsCount, p.drr, p.salesSchema, p.productUrl]
+        [
+          p.sku,
+          p.title,
+          p.category3Name,
+          p.brand,
+          p.soldCount,
+          p.createDays,
+          p.convToCartPdp,
+          p.cancelRate,
+          p.reviewsCount,
+          p.drr,
+          p.salesSchema,
+          p.price,
+          rate > 0 ? (Number(p.price) * rate).toFixed(2) : '',
+          p.productUrl,
+        ]
           .map(q)
           .join(','),
       ),
@@ -373,13 +402,22 @@ export default function ProductsPage() {
             { title: '类目', dataIndex: 'category3Name', width: 130, ellipsis: true },
             { title: '品牌', dataIndex: 'brand', width: 100 },
             {
-              title: '价格',
+              title: '价格(₽/¥)',
               dataIndex: 'price',
-              width: 96,
+              width: 110,
               align: 'right',
               sorter: true,
-              render: (v: any) =>
-                v === null || v === undefined ? '—' : <span className="mono">{Number(v).toLocaleString('ru-RU')} ₽</span>,
+              render: (v: any) => {
+                if (v === null || v === undefined) return '—';
+                const cny = rate > 0 ? Number(v) * rate : 0;
+                return (
+                  <span className="mono">
+                    {Number(v).toLocaleString('ru-RU')} ₽
+                    <br />
+                    <span style={{ color: '#8c8c8c' }}>¥{cny.toFixed(2)}</span>
+                  </span>
+                );
+              },
             },
             { title: '月销', dataIndex: 'soldCount', width: 72, align: 'right', sorter: true },
             {

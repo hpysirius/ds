@@ -12,6 +12,8 @@
  * cookie 从「浏览器接管」的调试 Chrome 里同步一次存库，之后这里全程纯 HTTP。
  */
 
+import { proxyGet } from './sourcing.proxy';
+
 export const DESKTOP_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
 export const MOBILE_UA =
@@ -54,22 +56,44 @@ function throttle<T>(fn: () => Promise<T>): Promise<T> {
 /** 带超时的 HTTP GET，自动识别「被踢到登录页 / 命中风控」 */
 export async function httpGet(
   url: string,
-  opts: { cookie?: string | null; mobile?: boolean; timeoutMs?: number; referer?: string; throttle?: boolean } = {},
+  opts: {
+    cookie?: string | null;
+    mobile?: boolean;
+    timeoutMs?: number;
+    referer?: string;
+    throttle?: boolean;
+    proxy?: string | null;
+  } = {},
 ): Promise<Fetched> {
   const doFetch = async (): Promise<Fetched> => {
+    const headers: Record<string, string> = {
+      'User-Agent': opts.mobile ? MOBILE_UA : DESKTOP_UA,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9',
+      Referer: opts.referer || 'https://www.1688.com/',
+      ...(opts.cookie ? { Cookie: opts.cookie } : {}),
+    };
+    // 填了代理就走代理出口（机房 IP 被风控时唯一有效的办法）；代理失败自动降级直连
+    if (opts.proxy) {
+      try {
+        const r = await proxyGet(url, opts.proxy, headers, opts.timeoutMs ?? 12000);
+        const punished =
+          /_____tmd_____|x5secdata|punish\?/.test(r.body.slice(0, 1200)) || /_____tmd_____/.test(r.finalUrl);
+        const needsLogin =
+          !punished &&
+          (/login\.1688\.com|login\.taobao\.com/.test(r.finalUrl) || /请先登录|会员登录/.test(r.body.slice(0, 3000)));
+        return { ...r, needsLogin, punished };
+      } catch (e) {
+        /* 代理不可用（地址错/超时/代理本身被风控）→ 下面退回直连 */
+      }
+    }
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), opts.timeoutMs ?? 12000);
     try {
       const res = await fetch(url, {
         redirect: 'follow',
         signal: ctl.signal,
-        headers: {
-          'User-Agent': opts.mobile ? MOBILE_UA : DESKTOP_UA,
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'zh-CN,zh;q=0.9',
-          Referer: opts.referer || 'https://www.1688.com/',
-          ...(opts.cookie ? { Cookie: opts.cookie } : {}),
-        },
+        headers,
       });
       const body = await res.text();
       const finalUrl = res.url || url;
@@ -96,6 +120,14 @@ export function cacheGet<T>(key: string, ttlMs: number): T | null {
   }
   return hit.val as T;
 }
+/** 命中风控时的兜底：拿已经过期但还存在的缓存（比直接报错有用） */
+export function cacheGetStale<T>(key: string, maxAgeMs = 7 * 24 * 3600 * 1000): T | null {
+  const hit = cache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > maxAgeMs) return null;
+  return hit.val as T;
+}
+
 export function cacheSet(key: string, val: any) {
   cache.set(key, { at: Date.now(), val });
   if (cache.size > 500) {

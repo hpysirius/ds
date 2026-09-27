@@ -193,6 +193,74 @@ async function evalInTab(tabId, fn) {
   return r ? r.result : null;
 }
 
+/* ─────────────── 1688 采集 + 回填核价页 ─────────────── */
+
+/**
+ * 在当前（1688）标签页里采集货品信息。
+ * 走页面注入而不是后端 HTTP：机房 IP 会被 1688 的 cloud_ip_bl 拉黑，抓不到；用户自己的浏览器不会。
+ */
+async function collect1688() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) throw new Error('没有活动的标签页');
+  if (!/1688\.com/i.test(tab.url || '')) {
+    throw new Error('当前页面不是 1688。请先打开 detail.1688.com 的货品页，再点这个按钮');
+  }
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ['supply1688-collector.js'],
+  });
+  const res = await evalInTab(tab.id, () =>
+    typeof window.__dsCollect1688 === 'function' ? window.__dsCollect1688() : { ok: false, error: '采集脚本没注入成功' },
+  );
+  if (!res || !res.ok) throw new Error((res && res.error) || '1688 采集失败');
+  return res;
+}
+
+/**
+ * 把采集到的数据回填到核价页：把值拼到 URL 参数上，然后打开（或复用已打开的）核价页。
+ * 用 URL 传而不是走后端中转：数据不出本机、即时生效，也不用给后端加表。
+ */
+async function fillPricingPage(targetUrl, data) {
+  let u;
+  try {
+    u = new URL(String(targetUrl || '').trim());
+  } catch (e) {
+    throw new Error('核价页地址不是一个合法 URL');
+  }
+  if (!/^https?:$/.test(u.protocol)) throw new Error('核价页地址要以 http:// 或 https:// 开头');
+
+  const set = (k, v) => {
+    if (v != null && v !== '' && Number.isFinite(Number(v))) u.searchParams.set(k, String(Number(v)));
+  };
+  u.searchParams.set('dsfill', '1');
+  set('cost', data.purchaseCost);
+  set('wt', data.weightKg);
+  set('l', data.lengthCm);
+  set('w', data.widthCm);
+  set('h', data.heightCm);
+  if (data.supplyUrl) u.searchParams.set('supply', String(data.supplyUrl));
+  if (data.title) u.searchParams.set('stitle', String(data.title).slice(0, 120));
+  const url = u.toString();
+
+  // 已经开着核价页就复用它（改地址 + reload），否则新开一个
+  const tabs = await chrome.tabs.query({});
+  const exist = tabs.find((t) => {
+    if (!t.url) return false;
+    try {
+      const x = new URL(t.url);
+      return x.origin === u.origin && x.pathname.replace(/\/$/, '') === u.pathname.replace(/\/$/, '');
+    } catch (e) {
+      return false;
+    }
+  });
+  if (exist && exist.id) {
+    await chrome.tabs.update(exist.id, { url, active: true });
+  } else {
+    await chrome.tabs.create({ url, active: true });
+  }
+  return { url };
+}
+
 /**
  * 等页面真正就绪。
  * 关键：必须等 URL 里出现当前 sku 再判定 ready —— 否则会把上一个商品的数据当成当前商品上报。
@@ -458,6 +526,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           break;
         case 'DS_COLLECT_LIST':
           sendResponse({ ok: true, result: await collectListPage(msg.scrolls) });
+          break;
+        case 'DS_COLLECT_1688':
+          sendResponse({ ok: true, result: await collect1688() });
+          break;
+        case 'DS_FILL_PRICING':
+          sendResponse({ ok: true, result: await fillPricingPage(msg.url, msg.data || {}) });
           break;
         case 'DS_START_BATCH':
           sendResponse({ ok: true, result: await runBatch(msg.limit || 20) });

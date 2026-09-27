@@ -13,9 +13,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 
     let message: any = 'Internal server error';
+    // 业务抛的自定义字段（比如 code / punishUrl）要原样透传给前端，前端靠它们做分支处理
+    const extra: Record<string, any> = {};
     if (exception instanceof HttpException) {
       const res = exception.getResponse();
-      message = typeof res === 'string' ? res : (res as any).message || res;
+      if (typeof res === 'string') {
+        message = res;
+      } else {
+        const obj: any = res;
+        message = obj.message || obj;
+        for (const [k, v] of Object.entries(obj)) {
+          if (!['message', 'statusCode', 'error'].includes(k)) extra[k] = v;
+        }
+      }
     } else if (exception instanceof Error) {
       message = exception.message;
     }
@@ -29,6 +39,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       path: request.url,
       message: Array.isArray(message) ? message[0] : message,
+      ...extra,
     });
   }
 }

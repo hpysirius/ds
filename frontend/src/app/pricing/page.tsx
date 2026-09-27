@@ -348,6 +348,14 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
   const [importSheet, setImportSheet] = useState('定价表');
   const [importReplace, setImportReplace] = useState(false);
   const [importResult, setImportResult] = useState<any>(null);
+  /** 上架状态筛选：all / yes / no */
+  const [listedFilter, setListedFilter] = useState<'all' | 'yes' | 'no'>('all');
+  const [selectedKeys, setSelectedKeys] = useState<number[]>([]);
+  const [listing, setListing] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+  const [editForm] = Form.useForm();
 
   /** 从 Excel《定价表》导入（按「工作表!行号」幂等，可勾选替换重导） */
   const doImport = async () => {
@@ -373,14 +381,97 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
   };
 
   const load = useCallback(async () => {
-    const { data } = await http.get('/pricing/records', { params: { page, pageSize: 20, keyword: keyword || undefined } });
+    const { data } = await http.get('/pricing/records', {
+      params: {
+        page,
+        pageSize: 20,
+        keyword: keyword || undefined,
+        listed: listedFilter === 'all' ? undefined : listedFilter === 'yes',
+      },
+    });
     setList(data.list);
     setTotal(data.total);
-  }, [page, keyword]);
+  }, [page, keyword, listedFilter]);
 
   useEffect(() => {
     load().catch((e) => message.error(e.message));
   }, [load, reloadKey]);
+
+  /** 上架 / 下架（单条传 [id]，批量传选中项） */
+  const doListing = async (ids: number[], listed: boolean, tip?: string) => {
+    if (!ids.length) {
+      message.warning('请先选择记录');
+      return;
+    }
+    setListing(true);
+    try {
+      const { data } = await http.post('/pricing/records/listing', { ids, listed });
+      message.success(`${listed ? '已上架' : '已下架'} ${data?.count ?? ids.length} 条${tip || ''}`);
+      setSelectedKeys([]);
+      await load();
+    } catch (e: any) {
+      message.error(e.message);
+    } finally {
+      setListing(false);
+    }
+  };
+
+  /** 打开「修改」弹窗 */
+  const openEdit = (r: any) => {
+    setEditing(r);
+    editForm.setFieldsValue({
+      name: r.name || '',
+      sku: r.sku || '',
+      purchaseCost: r.purchaseCost ?? 0,
+      weightKg: r.weightKg ?? 0,
+      lengthCm: r.lengthCm ?? 0,
+      widthCm: r.widthCm ?? 0,
+      heightCm: r.heightCm ?? 0,
+      sellPrice: r.sellPrice ?? 0,
+      exchangeRate: r.exchangeRate ?? 0.0862,
+      shippingFee: r.shippingFee ?? 0,
+      billWeightKg: r.billWeightKg ?? 0,
+      labelFee: r.labelFee ?? 2,
+      commissionRate: Number(((r.commissionRate ?? 0) * 100).toFixed(2)),
+      agentRate: Number(((r.agentRate ?? 0) * 100).toFixed(2)),
+      withdrawRate: Number(((r.withdrawRate ?? 0) * 100).toFixed(2)),
+      markupRate: Number(((r.markupRate ?? 0.1) * 100).toFixed(2)),
+      channelName: r.channelName || '',
+      shipMode: r.shipMode || '',
+      country: r.country || 'RU',
+      vendor: r.vendor || 'GUOO',
+      supplyUrl: r.supplyUrl || '',
+      retailUrl: r.retailUrl || '',
+      remark: r.remark || '',
+      listed: !!r.listed,
+    });
+    setEditOpen(true);
+  };
+
+  const submitEdit = async () => {
+    const v = await editForm.validateFields();
+    setSaving(true);
+    try {
+      const rate = Number(v.exchangeRate) || 0;
+      await http.patch(`/pricing/records/${editing.id}`, {
+        ...v,
+        // 百分数 → 小数
+        commissionRate: Number(v.commissionRate || 0) / 100,
+        agentRate: Number(v.agentRate || 0) / 100,
+        withdrawRate: Number(v.withdrawRate || 0) / 100,
+        markupRate: Number(v.markupRate || 0) / 100,
+        // 卢布定价跟人民币定价 + 汇率联动
+        sellPriceRub: rate > 0 ? Number((Number(v.sellPrice || 0) / rate).toFixed(2)) : 0,
+      });
+      message.success('已保存，利润已按新参数重算');
+      setEditOpen(false);
+      await load();
+    } catch (e: any) {
+      message.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const columns = [
     {
@@ -466,22 +557,50 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
       ),
     },
     {
+      title: '状态',
+      dataIndex: 'listed',
+      key: 'listed',
+      width: 92,
+      render: (v: any, r: any) =>
+        v ? (
+          <Tooltip title={r.listedAt ? `上架于 ${String(r.listedAt).slice(0, 19).replace('T', ' ')}` : '已上架'}>
+            <Tag color="green">已上架</Tag>
+          </Tooltip>
+        ) : (
+          <Tag>未上架</Tag>
+        ),
+    },
+    {
       title: '操作',
       key: 'op',
-      width: 70,
+      width: 150,
+      fixed: 'right' as const,
       render: (_: any, r: any) => (
-        <Popconfirm
-          title="删除这条记录？"
-          onConfirm={async () => {
-            await http.delete(`/pricing/records/${r.id}`);
-            message.success('已删除');
-            load();
-          }}
-        >
-          <Button type="link" size="small" danger>
-            删除
+        <Space size={0}>
+          <Button type="link" size="small" onClick={() => openEdit(r)}>
+            修改
           </Button>
-        </Popconfirm>
+          <Popconfirm
+            title={r.listed ? '把这条记录标记为下架？' : '把这条记录标记为已上架？'}
+            onConfirm={() => doListing([r.id], !r.listed)}
+          >
+            <Button type="link" size="small" style={{ color: r.listed ? '#d46b08' : '#389e0d' }}>
+              {r.listed ? '下架' : '上架'}
+            </Button>
+          </Popconfirm>
+          <Popconfirm
+            title="删除这条记录？"
+            onConfirm={async () => {
+              await http.delete(`/pricing/records/${r.id}`);
+              message.success('已删除');
+              load();
+            }}
+          >
+            <Button type="link" size="small" danger>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -549,12 +668,193 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
     </Modal>
   );
 
+  const editModal = (
+    <Modal
+      open={editOpen}
+      onCancel={() => setEditOpen(false)}
+      onOk={submitEdit}
+      okText="保存并重算"
+      confirmLoading={saving}
+      title={editing ? `修改定价记录 #${editing.id}` : '修改定价记录'}
+      width={800}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="改完采购成本 / 运费 / 尺寸 / 费率后，毛利润、净利润、利润率会按当前口径重算；上架状态也可在这里改。"
+      />
+      <Form form={editForm} layout="vertical" size="small">
+        <Row gutter={12}>
+          <Col span={14}>
+            <Form.Item name="name" label="产品备注">
+              <Input placeholder="产品名称 / 备注" />
+            </Form.Item>
+          </Col>
+          <Col span={10}>
+            <Form.Item name="sku" label="SKU">
+              <Input placeholder="Ozon SKU" />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={12}>
+          <Col span={6}>
+            <Form.Item name="purchaseCost" label="采购成本 ¥" rules={[{ required: true }]}>
+              <InputNumber style={{ width: '100%' }} min={0} step={0.1} precision={2} />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item name="weightKg" label="重量 kg">
+              <InputNumber style={{ width: '100%' }} min={0} step={0.001} precision={4} />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="lengthCm" label="长 cm">
+              <InputNumber style={{ width: '100%' }} min={0} step={0.1} precision={2} />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="widthCm" label="宽 cm">
+              <InputNumber style={{ width: '100%' }} min={0} step={0.1} precision={2} />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="heightCm" label="高 cm">
+              <InputNumber style={{ width: '100%' }} min={0} step={0.1} precision={2} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={12}>
+          <Col span={6}>
+            <Form.Item name="sellPrice" label="定价 ¥" rules={[{ required: true }]}>
+              <InputNumber style={{ width: '100%' }} min={0} step={1} precision={2} />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item label="定价 ₽（自动）">
+              <Form.Item noStyle shouldUpdate={(a: any, b: any) => a.sellPrice !== b.sellPrice || a.exchangeRate !== b.exchangeRate}>
+                {() => {
+                  const sp = Number(editForm.getFieldValue('sellPrice') || 0);
+                  const rate = Number(editForm.getFieldValue('exchangeRate') || 0);
+                  const rub = rate > 0 ? sp / rate : 0;
+                  return <span style={{ lineHeight: '30px', fontWeight: 600 }}>{rub ? `${rub.toFixed(0)} ₽` : '—'}</span>;
+                }}
+              </Form.Item>
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item name="exchangeRate" label="汇率 1₽=?¥">
+              <InputNumber style={{ width: '100%' }} min={0} step={0.0001} precision={6} />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item name="labelFee" label="贴单费 ¥">
+              <InputNumber style={{ width: '100%' }} min={0} step={0.5} precision={2} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={12}>
+          <Col span={6}>
+            <Form.Item name="shippingFee" label="国际运费 ¥">
+              <InputNumber style={{ width: '100%' }} min={0} step={0.5} precision={2} />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item name="billWeightKg" label="计费重量 kg">
+              <InputNumber style={{ width: '100%' }} min={0} step={0.001} precision={4} />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="commissionRate" label="平台佣金 %">
+              <InputNumber style={{ width: '100%' }} min={0} max={100} step={0.5} precision={2} />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="agentRate" label="代理佣金 %">
+              <InputNumber style={{ width: '100%' }} min={0} max={100} step={0.1} precision={2} />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="withdrawRate" label="提现费率 %">
+              <InputNumber style={{ width: '100%' }} min={0} max={100} step={0.1} precision={2} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={12}>
+          <Col span={6}>
+            <Form.Item name="markupRate" label="成本加价 %">
+              <InputNumber style={{ width: '100%' }} min={0} max={300} step={1} precision={2} />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item name="channelName" label="物流渠道">
+              <Input placeholder="GUOO Economy Extra Small" />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="shipMode" label="运输方式">
+              <Input placeholder="陆运" />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="country" label="国家">
+              <Select options={COUNTRIES} />
+            </Form.Item>
+          </Col>
+          <Col span={4}>
+            <Form.Item name="vendor" label="物流商">
+              <Select options={VENDORS} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={12}>
+          <Col span={12}>
+            <Form.Item name="supplyUrl" label="1688 货源链接">
+              <Input placeholder="https://detail.1688.com/offer/....html" />
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <Form.Item name="retailUrl" label="Ozon 跟卖链接">
+              <Input placeholder="https://www.ozon.ru/product/...." />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Row gutter={12}>
+          <Col span={18}>
+            <Form.Item name="remark" label="备注">
+              <Input placeholder="备注" />
+            </Form.Item>
+          </Col>
+          <Col span={6}>
+            <Form.Item name="listed" label="上架状态" valuePropName="checked">
+              <Switch checkedChildren="已上架" unCheckedChildren="未上架" />
+            </Form.Item>
+          </Col>
+        </Row>
+      </Form>
+    </Modal>
+  );
+
   return (
     <Card
       size="small"
       title="定价记录"
       extra={
         <Space>
+          <Select
+            value={listedFilter}
+            onChange={(v) => {
+              setListedFilter(v);
+              setPage(1);
+              setSelectedKeys([]);
+            }}
+            style={{ width: 110 }}
+            options={[
+              { value: 'all', label: '全部状态' },
+              { value: 'yes', label: '已上架' },
+              { value: 'no', label: '未上架' },
+            ]}
+          />
           <Input.Search placeholder="产品/渠道" allowClear value={keyword} onChange={(e) => setKeyword(e.target.value)} onSearch={() => setPage(1)} style={{ width: 200 }} />
           <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
             导入定价表
@@ -567,12 +867,26 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
       }
     >
       {importModal}
+      {editModal}
+      <Space style={{ marginBottom: 8 }}>
+        <span style={{ fontSize: 13, color: '#666' }}>已选 {selectedKeys.length} 条</span>
+        <Button size="small" loading={listing} disabled={!selectedKeys.length} onClick={() => doListing(selectedKeys, true, '（所选）')}>
+          批量上架
+        </Button>
+        <Button size="small" loading={listing} disabled={!selectedKeys.length} onClick={() => doListing(selectedKeys, false, '（所选）')}>
+          批量下架
+        </Button>
+      </Space>
       <Table
         size="small"
         rowKey="id"
         dataSource={list}
         columns={columns as any}
-        scroll={{ x: 1400 }}
+        scroll={{ x: 1500 }}
+        rowSelection={{
+          selectedRowKeys: selectedKeys,
+          onChange: (keys) => setSelectedKeys(keys as number[]),
+        }}
         pagination={{ current: page, pageSize: 20, total, onChange: setPage }}
       />
     </Card>
