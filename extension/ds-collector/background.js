@@ -32,6 +32,22 @@ async function tagItem(item) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 把 Chrome 的底层报错翻译成人话。
+ * 典型：「Frame with ID 0 is showing error page」—— 标签页变成了浏览器错误页
+ * （页面崩溃 / 网络中断 / 被反爬跳转），此时 Chrome 会拒绝再往这个标签页注入脚本。
+ */
+function friendlyError(e) {
+  const m = String((e && e.message) || e);
+  if (/showing error page|Frame with ID 0/i.test(m)) {
+    return 'Ozon 页面变成了浏览器错误页（页面崩溃 / 网络中断 / 被反爬跳转），已无法继续注入脚本 —— 请刷新该标签页后重试（可把「滚动屏数」调小）';
+  }
+  if (/No tab with id|tab was closed|Tab was closed/i.test(m)) {
+    return '采集用的标签页被关掉了 —— 请重新点一次采集';
+  }
+  return m;
+}
+
 /** 规范化后端地址：没写协议就补 http://，去掉尾部斜杠（漏写协议是连不上的常见原因） */
 function normalizeApi(v) {
   let s = String(v || '').trim().replace(/\/+$/, '');
@@ -401,18 +417,36 @@ async function collectListPage(scrolls) {
 
   const seen = new Map();
   const rounds = Math.max(0, Math.min(scrolls || 0, 30));
+  let aborted = ''; // 非空表示中途被中断（页面错误页 / 滚动失败），原因存这里
   for (let i = 0; i <= rounds; i++) {
-    const items = (await evalInTab(tab.id, collectList)) || [];
+    let items = [];
+    try {
+      items = (await evalInTab(tab.id, collectList)) || [];
+    } catch (e) {
+      // 页面已变成错误页（崩溃/断网/反爬跳转）→ 停止滚动，但别把已抓到的也一起丢掉
+      aborted = friendlyError(e);
+      await log(`⚠️ 读取第 ${i + 1} 屏失败：${aborted}`);
+      break;
+    }
     items.forEach((it) => { if (it && it.sku) seen.set(it.sku, it); });
     await log(`📄 第 ${i + 1} 屏抓到 ${items.length} 个（累计去重 ${seen.size}）`);
     if (i < rounds) {
-      await evalInTab(tab.id, scrollDown);
+      try {
+        await evalInTab(tab.id, scrollDown);
+      } catch (e) {
+        aborted = friendlyError(e);
+        await log(`⚠️ 滚动中断：${aborted}`);
+        break;
+      }
       await sleep(1800); // 等无限滚动把下一屏加载出来
     }
   }
 
   const items = [...seen.values()].filter((it) => it.title || it.price || it.imageUrl);
-  if (!items.length) throw new Error('没抓到任何商品卡片（页面加载完了吗？）');
+  // 一个都没抓到：直接把中断原因抛出去（比"没抓到任何商品卡片"有用得多）
+  if (!items.length) {
+    throw new Error(aborted || '没抓到任何商品卡片（页面加载完了吗？）');
+  }
 
   // 按采集规则给商品打标签（命中的带 item.tags 一起上报入库）
   let tagged = 0;
@@ -423,8 +457,10 @@ async function collectListPage(scrolls) {
   if (tagged) await log(`🏷 ${tagged}/${items.length} 个商品命中规则打上标签`);
 
   const r = await ingestListChunked(tab.url, items);
-  await log(`✅ 列表采集完成：抓到 ${items.length} 个 → 新建 ${r.created} / 更新 ${r.updated}`);
-  return r;
+  await log(
+    `✅ 列表采集${aborted ? '未跑完，已上传已抓到的部分' : '完成'}：抓到 ${items.length} 个 → 新建 ${r.created} / 更新 ${r.updated}`,
+  );
+  return { ...r, aborted: aborted || '' };
 }
 
 async function runBatch(limit) {
@@ -477,7 +513,7 @@ async function runBatch(limit) {
       }
     } catch (e) {
       failed++;
-      await log(`❌ ${it.sku} 失败：${String((e && e.message) || e).slice(0, 100)}`);
+      await log(`❌ ${it.sku} 失败：${friendlyError(e).slice(0, 100)}`);
     }
     await setState({ done, failed });
     await sleep(400);
@@ -555,7 +591,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: false, error: '未知指令' });
       }
     } catch (e) {
-      const message = String((e && e.message) || e);
+      const message = friendlyError(e);
       await log(`❌ ${message.slice(0, 120)}`);
       sendResponse({ ok: false, error: message });
     }

@@ -110,7 +110,10 @@ $('collectList').onclick = async () => {
   if (!r.ok) alert(r.error || '采集失败');
   else if (r.result) {
     const x = r.result;
-    alert(`抓到 ${x.total} 个商品\n新建 ${x.created} 个\n更新 ${x.updated} 个`);
+    alert(
+      `抓到 ${x.total} 个商品\n新建 ${x.created} 个\n更新 ${x.updated} 个` +
+        (x.aborted ? `\n\n⚠️ 滚动中途页面出错（已停止），但已抓到并上传了 ${x.total} 个。\n原因：${x.aborted}` : ''),
+    );
   }
   await refresh();
 };
