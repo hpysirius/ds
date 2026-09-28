@@ -196,8 +196,14 @@ export function parseSearchCards(html: string): SearchItem[] {
 export interface OfferDetail {
   offerId: string;
   title: string;
+  /** 核价该用的单件成本：阶梯价商品 = 最小起批量那档 */
   price: number | null;
+  priceMin: number | null;
   priceMax: number | null;
+  /** 阶梯价商品的「最小起批量那档」单价（页面上规格行显示的就是它） */
+  basePrice: number | null;
+  /** 阶梯价档位（按购买数量定价；规格里没有价格时的权威来源） */
+  priceRanges: { price: number; beginAmount: number; endAmount: number }[];
   weightG: number | null;
   lengthCm: number | null;
   widthCm: number | null;
@@ -208,6 +214,8 @@ export interface OfferDetail {
   minOrderQuantity: number | null;
   companyName: string | null;
   fromPackInfo: boolean;
+  /** 1688 有「商品件重尺」但长宽高是默认的 1×1×1（商家没填），尺寸按缺失处理 */
+  packPlaceholder: boolean;
   /** 另需运费（freightInfo.totalCost，随买家收货地址/规格变） */
   freightYuan: number | null;
   /** 全部可选规格（名称/价格/重量/尺寸），供前端挑规格后填成本与包裹 */
@@ -284,6 +292,31 @@ export function parseDimsFromName(name: string): { l: number; w: number; h: numb
   return { l: dims[0], w: dims[1], h: dims[2] };
 }
 
+/**
+ * 1688 的「默认占位值」坑：商家没填包装尺寸时，接口照样返回
+ *   {"volume":1.0,"length":1.0,"width":1.0,"weight":92,"height":1.0}
+ * 长宽高全是 1 —— 这不是真实尺寸（1cm³ 的商品不存在），以前会被当真值回填，
+ * 核价里的抛重/体积重/运费全算错。识别出来按「缺失」处理。
+ * 缺值（null/0）不算占位，那是真的没数据。
+ */
+export function isPlaceholderPack(l: unknown, w: unknown, h: unknown, volume?: unknown): boolean {
+  const n = [Number(l), Number(w), Number(h)];
+  if (n.some((x) => !Number.isFinite(x) || x <= 0)) return false;
+  if (n.every((x) => x <= 1.0001)) return true; // 1×1×1
+  const v = Number(volume);
+  if (Number.isFinite(v) && v > 0 && v <= 1.0001) return true; // 体积 1cm³
+  return false;
+}
+
+/** 一组包装尺寸能不能用：缺值 / 1688 占位值 / 明显离谱（>5m，多半把 mm 当 cm）都不要 */
+export function usablePackDims(l: unknown, w: unknown, h: unknown, volume?: unknown): boolean {
+  const n = [Number(l), Number(w), Number(h)];
+  if (n.some((x) => !Number.isFinite(x) || x <= 0)) return false;
+  if (isPlaceholderPack(l, w, h, volume)) return false;
+  if (n.some((x) => x > 500)) return false;
+  return true;
+}
+
 /** 货品页里的单个可选规格（SKU） */
 export interface OfferSku {
   skuId: string;
@@ -314,6 +347,41 @@ export function parseOfferHtml(html: string, offerId: string): OfferDetail {
   if (!prices.length) push(/"price"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?/g);
   const uniq = [...new Set(prices)].sort((a, b) => a - b);
 
+  /*
+   * 阶梯价（区间价商品）：1688 有两种定价方式，必须都兼容 ——
+   *   a) 按规格定价 → 价格在 skuMap/skuInfoMap 的 price/discountPrice 里；
+   *   b) 按购买数量阶梯定价 → skuPriceType:"rangePrice"，规格列表里【没有】价格字段
+   *      （那里只有 priceAmount = 档位数，不是钱！），价格在
+   *      offerPriceRanges / currentPrices / skuRangePrices 里；
+   *      页面上每个规格行显示的是「最小起批量那一档」的价（basePrice）。
+   * 老代码只认 (a) → 遇到 (b) 类商品 skus 全被跳过、价格只剩 priceDisplay 一个值。
+   */
+  const priceRanges: { price: number; beginAmount: number; endAmount: number }[] = [];
+  {
+    const addRanges = (arr: any) => {
+      for (const x of Array.isArray(arr) ? arr : []) {
+        const p = Number(x?.discountPrice != null ? x.discountPrice : x?.price);
+        if (!Number.isFinite(p) || p <= 0) continue;
+        const beginAmount = Number(x?.beginAmount) || 1;
+        if (priceRanges.some((r) => r.price === p && r.beginAmount === beginAmount)) continue;
+        priceRanges.push({ price: p, beginAmount, endAmount: Number(x?.endAmount) || 0 });
+      }
+    };
+    for (const key of ['offerPriceRanges', 'currentPrices', 'skuRangePrices']) {
+      for (const seg of sliceAllBalancedJson(html, key)) {
+        try {
+          addRanges(JSON.parse(seg));
+        } catch (e) {
+          /* currentPrices 可能是 {"$ref":…} 占位 */
+        }
+      }
+      if (priceRanges.length) break;
+    }
+    // 起批量最小的那档 = 页面上规格行显示的单价 = 核价该用的单件成本
+    priceRanges.sort((a, b) => a.beginAmount - b.beginAmount);
+  }
+  const basePrice = priceRanges.length ? priceRanges[0].price : null;
+
   let weightG: number | null = null;
   let lengthCm: number | null = null;
   let widthCm: number | null = null;
@@ -322,6 +390,7 @@ export function parseOfferHtml(html: string, offerId: string): OfferDetail {
   let packSkuCount = 0;
   let packSkuName: string | null = null;
   let fromPackInfo = false;
+  let packPlaceholder = false; // 1688 返回的是 1×1×1 占位值（商家没填尺寸）
 
   const arrStr = sliceBalancedArray(html, 'pieceWeightScaleInfo');
   if (arrStr) {
@@ -329,21 +398,39 @@ export function parseOfferHtml(html: string, offerId: string): OfferDetail {
       const arr = JSON.parse(arrStr);
       if (Array.isArray(arr) && arr.length) {
         packSkuCount = arr.length;
-        // 多 SKU 时：优先取「长宽高齐全」的那条拿尺寸，重量单独找第一条有的
-        const dimItem = arr.find(
-          (x: any) => Number(x?.length) && Number(x?.width) && Number(x?.height),
-        );
+        // 多 SKU 时：优先取「长宽高齐全且不是 1×1×1 占位值」的那条，重量单独找第一条有的
+        const dimItem = arr.find((x: any) => usablePackDims(x?.length, x?.width, x?.height, x?.volume));
         const wtItem = arr.find((x: any) => Number(x?.weight));
-        lengthCm = Number(dimItem?.length) || null;
-        widthCm = Number(dimItem?.width) || null;
-        heightCm = Number(dimItem?.height) || null;
+        lengthCm = dimItem ? Number(dimItem.length) : null;
+        widthCm = dimItem ? Number(dimItem.width) : null;
+        heightCm = dimItem ? Number(dimItem.height) : null;
         weightG = Number(wtItem?.weight) || Number(dimItem?.weight) || null;
-        volumeCm3 = Number(dimItem?.volume) || null;
+        volumeCm3 = dimItem && Number(dimItem?.volume) > 0 ? Number(dimItem.volume) : null;
         packSkuName = (wtItem?.sku1 || dimItem?.sku1 || wtItem?.skuName || '') || null;
         fromPackInfo = !!(lengthCm || weightG);
+        // 有数据但全是占位值：记一笔，让前端明确知道"尺寸是商家没填"，别拿 1 去算运费
+        if (!dimItem && arr.some((x: any) => isPlaceholderPack(x?.length, x?.width, x?.height, x?.volume))) {
+          packPlaceholder = true;
+        }
       }
     } catch (e) {
       warnings.push('包装信息 JSON 解析失败');
+    }
+  }
+
+  // 兜底重量：productPackInfo.fields.unitWeight（单位 kg）—— 有些货品只填了单件重量没填尺寸
+  if (weightG == null) {
+    for (const seg of sliceAllBalancedJson(html, 'productPackInfo')) {
+      try {
+        const kg = Number(JSON.parse(seg)?.fields?.unitWeight);
+        if (Number.isFinite(kg) && kg > 0) {
+          weightG = Math.round(kg * 1000); // kg → g
+          fromPackInfo = true;
+          break;
+        }
+      } catch (e) {
+        /* 结构变了就试下一个 */
+      }
     }
   }
 
@@ -397,15 +484,23 @@ export function parseOfferHtml(html: string, offerId: string): OfferDetail {
           continue;
         }
         for (const s of arr) {
-          const name = String(s?.specAttrs || s?.skuName || s?.name || '').trim();
+          // 规格名里有 &gt; 之类的实体（"藏青色&gt;女款37-41码"），要还原
+          const name = decode(String(s?.specAttrs || s?.skuName || s?.name || '')).trim();
           if (!name) continue;
           const skuId = String(s?.skuId ?? '');
           if (!skuId || seenIds.has(skuId)) continue;
-          const priceN = s?.discountPrice != null ? Number(s.discountPrice) : s?.price != null ? Number(s.price) : NaN;
-          if (!Number.isFinite(priceN) || priceN <= 0) continue; // 无价格的残缺条目跳过
+          // 注意：priceAmount 是「阶梯价档位数」不是价格（很多页面里它就是 1），别拿来当价格
+          let priceN = s?.discountPrice != null ? Number(s.discountPrice) : s?.price != null ? Number(s.price) : NaN;
+          // 区间价商品规格里没价格 → 用「最小起批量那档」兜底（页面上规格行显示的就是它）
+          if (!Number.isFinite(priceN) || priceN <= 0) priceN = basePrice ?? NaN;
+          if (!Number.isFinite(priceN) || priceN <= 0) continue; // 真的拿不到价才跳过
           seenIds.add(skuId);
           const pack = packBySkuId.get(skuId);
           const nameDims = parseDimsFromName(name);
+          // 包装信息里的尺寸要先排除 1×1×1 占位值，否则会拿 1cm 去算体积重
+          const packDims = usablePackDims(pack?.length, pack?.width, pack?.height, pack?.volume)
+            ? { l: Number(pack!.length), w: Number(pack!.width), h: Number(pack!.height) }
+            : null;
           skus.push({
             skuId,
             name: name.slice(0, 120),
@@ -414,9 +509,9 @@ export function parseOfferHtml(html: string, offerId: string): OfferDetail {
               weightBySkuId.get(skuId) ??
               (Number(pack?.weight) > 0 ? Number(pack.weight) : null),
             // 尺寸：规格名里的最可信，其次包装信息里的 length/width/height
-            lengthCm: nameDims?.l ?? (Number(pack?.length) > 0 ? Number(pack.length) : null),
-            widthCm: nameDims?.w ?? (Number(pack?.width) > 0 ? Number(pack.width) : null),
-            heightCm: nameDims?.h ?? (Number(pack?.height) > 0 ? Number(pack.height) : null),
+            lengthCm: nameDims?.l ?? packDims?.l ?? null,
+            widthCm: nameDims?.w ?? packDims?.w ?? null,
+            heightCm: nameDims?.h ?? packDims?.h ?? null,
             stock: s?.canBookCount != null ? Number(s.canBookCount) : null,
           });
         }
@@ -455,16 +550,30 @@ export function parseOfferHtml(html: string, offerId: string): OfferDetail {
 
   if (!uniq.length && !skus.length) warnings.push('未能读取价格');
   if (!fromPackInfo) warnings.push('未能在页面里找到「商品件重尺」（长宽高/重量）');
+  if (packPlaceholder && !skuWithDims) {
+    warnings.push('1688 没填包装尺寸（页面上是默认的 1×1×1），请手动填长宽高');
+  }
 
-  // 价格区间：页面 priceDisplay（可能是单值）与规格价合并取完整低-高区间
+  // 价格区间：页面 priceDisplay（可能是单值）、规格价、阶梯价档位合并取完整低-高区间
   const skuPrices = skus.map((s) => s.price).filter((p): p is number => p != null);
-  const allPrices = [...new Set([...uniq, ...skuPrices])].sort((a, b) => a - b);
+  const allPrices = [...new Set([...uniq, ...skuPrices, ...priceRanges.map((r) => r.price)])].sort(
+    (a, b) => a - b,
+  );
+  if (priceRanges.length > 1 && basePrice != null) {
+    const tiers = priceRanges.map((r) => `≥${r.beginAmount}件 ¥${r.price}`).join(' / ');
+    warnings.push(`按数量阶梯定价：${tiers} —— 成本按最小起批量 ¥${basePrice} 计，买得多更便宜`);
+  }
 
   return {
     offerId,
     title,
-    price: allPrices.length ? allPrices[0] : null,
+    // price 是「核价该用的单件成本」：阶梯价商品取最小起批量那档（3.50），而不是最低档（2.96），
+    // 否则成本会被低估、利润算高。真正的价格区间看 priceMin / priceMax。
+    price: basePrice ?? (allPrices.length ? allPrices[0] : null),
+    priceMin: allPrices.length ? allPrices[0] : null,
     priceMax: allPrices.length ? allPrices[allPrices.length - 1] : null,
+    basePrice,
+    priceRanges,
     weightG,
     lengthCm,
     widthCm,
@@ -475,6 +584,7 @@ export function parseOfferHtml(html: string, offerId: string): OfferDetail {
     minOrderQuantity: minOrderM ? Number(minOrderM[1]) : null,
     companyName: companyM ? decode(companyM[1]).trim() : null,
     fromPackInfo,
+    packPlaceholder,
     freightYuan,
     skus,
     warnings,

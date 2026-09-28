@@ -654,7 +654,11 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
         }
         if (of?.weightG) {
           form.setFieldsValue({ weightKg: Number((of.weightG / 1000).toFixed(4)), weightSource: '1688包装信息' });
-          log(`✔ 包装信息：${of.lengthCm}×${of.widthCm}×${of.heightCm}cm · ${of.weightG}g`);
+          const dimTxt =
+            of?.lengthCm && of?.widthCm && of?.heightCm
+              ? `${of.lengthCm}×${of.widthCm}×${of.heightCm}cm · `
+              : '尺寸缺失 · ';
+          log(`✔ 包装信息：${dimTxt}${of.weightG}g`);
         } else {
           log('⚠ 没抓到包装信息，先用商品库的重量尺寸');
         }

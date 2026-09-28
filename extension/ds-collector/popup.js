@@ -142,12 +142,13 @@ $('stop').onclick = async () => {
 
 let supply1688 = null; // 最近一次抓到的 1688 货品数据
 
-/** 规格下拉里的一行：名称 + 价格 + 重量 + 尺寸 */
+/** 规格下拉里的一行：名称 + 价格 + 重量 + 尺寸（尺寸为占位/缺失时不显示，避免误导） */
 function fmtSku(s) {
   const bits = [];
   if (s.price != null) bits.push('¥' + s.price);
   if (s.weightG != null) bits.push((s.weightG / 1000).toFixed(3) + 'kg');
   if (s.lengthCm && s.widthCm && s.heightCm) bits.push(`${s.lengthCm}×${s.widthCm}×${s.heightCm}`);
+  else bits.push('尺寸待填');
   const tail = bits.length ? ' — ' + bits.join(' · ') : '';
   return (s.name || '默认') + tail;
 }
@@ -157,11 +158,23 @@ function applySkuToForm(s) {
   if (!s) return;
   const fr = supply1688 && supply1688.freightYuan != null && $('addFreight').checked ? Number(supply1688.freightYuan) : 0;
   if (s.price != null) $('fCost').value = Number((Number(s.price) + fr).toFixed(2));
-  if (s.weightG != null) $('fWt').value = Number((Number(s.weightG) / 1000).toFixed(4));
-  if (s.lengthCm != null) $('fL').value = s.lengthCm;
-  if (s.widthCm != null) $('fW').value = s.widthCm;
-  if (s.heightCm != null) $('fH').value = s.heightCm;
+  $('fWt').value = s.weightG != null ? Number((Number(s.weightG) / 1000).toFixed(4)) : '';
+  // 1688 商家没填尺寸时会返回占位值 1×1×1，采集脚本已经把它判成缺失 —— 这里千万别填 1 进去
+  $('fL').value = s.lengthCm != null ? s.lengthCm : '';
+  $('fW').value = s.widthCm != null ? s.widthCm : '';
+  $('fH').value = s.heightCm != null ? s.heightCm : '';
   $('fFr').value = supply1688 && supply1688.freightYuan != null ? supply1688.freightYuan : '';
+  markMissingDims();
+}
+
+/** 缺尺寸时把长宽高输入框标黄，提醒手填 */
+function markMissingDims() {
+  ['fL', 'fW', 'fH'].forEach((id) => {
+    const el = $(id);
+    const empty = el.value === '' || Number(el.value) <= 1;
+    el.style.borderColor = empty ? '#d97706' : '';
+    el.style.background = empty ? '#fffbeb' : '';
+  });
 }
 
 function showFillInfo(html) {
@@ -192,11 +205,38 @@ $('grab1688').onclick = async () => {
     $('skuSel').value = String(idx);
     applySkuToForm(skus[idx]);
     const w = supply1688.warnings || [];
+    const pk = supply1688.pack || {};
+    const SRC = {
+      packInfo: '1688 商品件重尺',
+      table: '页面件重尺表格',
+      text: '页面文案',
+      unitWeight: '1688 单件重量',
+      cache: '你上次填的',
+    };
+    const pr = supply1688.priceRanges || [];
+    const priceLine =
+      pr.length > 1
+        ? `<div style="margin-top:3px">阶梯价：${pr
+            .map((r) => `≥${r.beginAmount}件 ¥${r.price}`)
+            .join(' / ')} <span style="color:#6b7280">（按最小起批量 ¥${supply1688.basePrice} 填的成本，可手改）</span></div>`
+        : '';
+    const packLine =
+      pk.lengthCm && pk.widthCm && pk.heightCm
+        ? `<div style="margin-top:3px">包装 ${pk.lengthCm}×${pk.widthCm}×${pk.heightCm}cm` +
+          (pk.volumeCm3 != null ? ` · 体积 ${pk.volumeCm3}` : '') +
+          (pk.weightG != null ? ` · ${pk.weightG}g` : '') +
+          (pk.source ? ` <span style="color:#6b7280">（${escapeHtml(SRC[pk.source] || pk.source)}）</span>` : '') +
+          `</div>`
+        : `<div style="margin-top:3px">包装尺寸 <b style="color:#d97706">缺失</b>${
+            pk.placeholder ? '（1688 页面上是默认的 1×1×1，商家没填）' : ''
+          }${pk.weightG != null ? ` · 重量 ${pk.weightG}g` : ''}</div>`;
     showFillInfo(
       `<div><b>${escapeHtml((supply1688.title || '').slice(0, 40))}</b></div>` +
         `<div style="margin-top:3px">抓到 ${skus.length} 个规格${
           supply1688.freightYuan != null ? ` · 另需运费 ¥${supply1688.freightYuan}` : ''
         }</div>` +
+        priceLine +
+        packLine +
         (w.length ? `<div style="margin-top:3px;color:#d97706">⚠ ${w.map(escapeHtml).join('；')}</div>` : ''),
     );
   } catch (e) {
@@ -218,6 +258,11 @@ $('addFreight').onchange = () => {
   applySkuToForm(skus[Number($('skuSel').value)]);
 };
 
+// 手填尺寸时实时取消黄色告警
+['fL', 'fW', 'fH'].forEach((id) => {
+  $(id).addEventListener('input', markMissingDims);
+});
+
 $('fillBtn').onclick = async () => {
   const url = $('target').value.trim();
   if (!url) {
@@ -229,6 +274,19 @@ $('fillBtn').onclick = async () => {
   btn.textContent = '回填中…';
   try {
     await chrome.storage.local.set({ pricingUrl: url });
+    // 手填/微调过的包装尺寸记下来：1688 自己没填时，下次抓同一货品能自动带上
+    if (supply1688 && supply1688.offerId) {
+      await send({
+        type: 'DS_SAVE_PACK',
+        offerId: supply1688.offerId,
+        pack: {
+          l: $('fL').value,
+          w: $('fW').value,
+          h: $('fH').value,
+          weightG: $('fWt').value != null && $('fWt').value !== '' ? Number($('fWt').value) * 1000 : 0,
+        },
+      });
+    }
     const r = await send({
       type: 'DS_FILL_PRICING',
       url,

@@ -212,6 +212,41 @@ async function evalInTab(tabId, fn) {
 /* ─────────────── 1688 采集 + 回填核价页 ─────────────── */
 
 /**
+ * 包装尺寸缓存：1688 商家经常不填长宽高（接口只返回占位值 1×1×1），
+ * 这时唯一可信来源是用户自己量过/填过的值。按 offerId 记下来，下次抓同一货品自动带上。
+ */
+async function getPackCache() {
+  const s = await chrome.storage.local.get(['dsPackCache']);
+  return s && s.dsPackCache ? s.dsPackCache : {};
+}
+
+async function savePackCache(offerId, pack) {
+  const id = String(offerId || '').trim();
+  const l = Number(pack && pack.l);
+  const w = Number(pack && pack.w);
+  const h = Number(pack && pack.h);
+  if (!id || !(l > 0 && w > 0 && h > 0)) return false;
+  const cache = await getPackCache();
+  cache[id] = {
+    l,
+    w,
+    h,
+    weightG: Number(pack.weightG) > 0 ? Math.round(Number(pack.weightG)) : 0,
+    at: Date.now(),
+  };
+  // 只留最近 300 条，别让 storage 无限涨
+  const keys = Object.keys(cache);
+  if (keys.length > 300) {
+    keys
+      .sort((a, b) => (cache[b].at || 0) - (cache[a].at || 0))
+      .slice(300)
+      .forEach((k) => delete cache[k]);
+  }
+  await chrome.storage.local.set({ dsPackCache: cache });
+  return true;
+}
+
+/**
  * 在当前（1688）标签页里采集货品信息。
  * 走页面注入而不是后端 HTTP：机房 IP 会被 1688 的 cloud_ip_bl 拉黑，抓不到；用户自己的浏览器不会。
  */
@@ -225,9 +260,16 @@ async function collect1688() {
     target: { tabId: tab.id },
     files: ['supply1688-collector.js'],
   });
-  const res = await evalInTab(tab.id, () =>
-    typeof window.__dsCollect1688 === 'function' ? window.__dsCollect1688() : { ok: false, error: '采集脚本没注入成功' },
-  );
+  const cache = await getPackCache();
+  const arr = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: (c) =>
+      typeof window.__dsCollect1688 === 'function'
+        ? window.__dsCollect1688(c)
+        : { ok: false, error: '采集脚本没注入成功' },
+    args: [cache],
+  });
+  const res = arr && arr[0] ? arr[0].result : null;
   if (!res || !res.ok) throw new Error((res && res.error) || '1688 采集失败');
   return res;
 }
@@ -585,6 +627,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           break;
         case 'DS_COLLECT_1688':
           sendResponse({ ok: true, result: await collect1688() });
+          break;
+        case 'DS_SAVE_PACK':
+          sendResponse({ ok: true, saved: await savePackCache(msg.offerId, msg.pack || {}) });
           break;
         case 'DS_FILL_PRICING':
           sendResponse({ ok: true, result: await fillPricingPage(msg.url, msg.data || {}) });
