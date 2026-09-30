@@ -279,6 +279,7 @@ export class PricingController {
   }
 
   @ApiBearerAuth()
+  @Public()
   @Post('records')
   @ApiOperation({ summary: '保存核价记录' })
   createRecord(@Body() dto: CreateRecordDto, @CurrentUser('id') userId: number) {
@@ -286,6 +287,7 @@ export class PricingController {
   }
 
   @ApiBearerAuth()
+  @Public()
   @Patch('records/:id')
   @ApiOperation({ summary: '修改核价记录' })
   updateRecord(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateRecordDto) {
@@ -293,6 +295,7 @@ export class PricingController {
   }
 
   @ApiBearerAuth()
+  @Public()
   @Post('records/listing')
   @ApiOperation({ summary: '上架 / 下架核价记录（ids 支持批量）' })
   setListing(@Body() dto: ListingDto) {
@@ -300,6 +303,7 @@ export class PricingController {
   }
 
   @ApiBearerAuth()
+  @Public()
   @Delete('records/:id')
   @ApiOperation({ summary: '删除核价记录' })
   removeRecord(@Param('id', ParseIntPipe) id: number) {
@@ -313,6 +317,7 @@ export class PricingController {
     return this.pricingService.importPricingExcel(dto.path, dto.sheet || '定价表', dto.replace === true);
   }
 
+  @Public()
   @Get('records/export')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   @ApiOperation({ summary: '导出核价表 CSV（列头与原定价表一致）' })

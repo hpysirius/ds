@@ -52,6 +52,11 @@ export class QueryProductDto {
   @IsBoolean()
   onlyNoReview?: boolean;
 
+  @ApiProperty({ required: false, description: '按规则标签筛选（标签名，对应插件采集时打上的 raw.tags[].name）' })
+  @IsOptional()
+  @IsString()
+  tag?: string;
+
   @ApiProperty({ required: false, default: 1 })
   @IsOptional()
   @IsInt()

@@ -37,6 +37,29 @@ export class ProductsService {
     const pageSize = Math.min(q.pageSize ?? 20, 200);
     const sortBy = SORTABLE.includes(q.sortBy) ? q.sortBy : 'lastSeenAt';
 
+    // 按规则标签筛选：tags 存在 raw Json 里（[{name,color,priority,rule}]）。
+    // Prisma 的 Json 过滤器对「对象数组的子集匹配」支持不稳定（会把候选对象当数组元素做严格相等比较，多字段就漏匹配），
+    // 这里改为应用层过滤：先取全部命中其它条件的商品，再按 raw.tags[].name 过滤分页。
+    // 当前商品量（数百~数千）内存过滤足够；若未来量级变大再迁移到 JSON_CONTAINS 原生 SQL。
+    if (q.tag) {
+      const all = await this.prisma.product.findMany({
+        where,
+        orderBy: { [sortBy]: q.order || 'desc' },
+        take: 5000,
+      });
+      const filtered = (all as any[]).filter(
+        (p) => Array.isArray((p.raw as any)?.tags) && (p.raw as any).tags.some((t: any) => t.name === q.tag),
+      );
+      const total = filtered.length;
+      const list = filtered
+        .slice((page - 1) * pageSize, page * pageSize)
+        .map((p) => ({
+          ...p,
+          tags: Array.isArray((p.raw as any).tags) ? (p.raw as any).tags : [],
+        }));
+      return { list, total, page, pageSize };
+    }
+
     const [list, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
@@ -47,7 +70,12 @@ export class ProductsService {
       this.prisma.product.count({ where }),
     ]);
 
-    return { list, total, page, pageSize };
+    // 把 raw.tags 提取到顶层，方便前端展示/筛选（不返回整个 raw，减小 payload）
+    const listWithTags = (list as any[]).map((p) => ({
+      ...p,
+      tags: p.raw && Array.isArray((p.raw as any).tags) ? (p.raw as any).tags : [],
+    }));
+    return { list: listWithTags, total, page, pageSize };
   }
 
   async findOne(sku: string) {

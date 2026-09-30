@@ -524,7 +524,47 @@ export class PricingService {
       }),
       this.prisma.pricingRecord.count({ where }),
     ]);
-    return { list: rows.map((r) => this.fmtRecord(r)), total, page, pageSize };
+    // 附带跟卖价格：按跟卖链接 / SKU 的 Ozon ID 去商品库查当前售价（卢布）
+    const idSet = new Set<string>();
+    for (const r of rows as any[]) {
+      const rid = this.ozonIdFromUrl(r.retailUrl) || this.ozonIdFromUrl(r.sku);
+      if (rid) idSet.add(rid);
+    }
+    const priceMap = new Map<string, number>();
+    const cardMap = new Map<string, any>();
+    if (idSet.size) {
+      const prods = await this.prisma.product.findMany({
+        where: { sku: { in: Array.from(idSet) } },
+        select: { sku: true, price: true, raw: true },
+      });
+      for (const p of prods) {
+        priceMap.set(p.sku, num(p.price));
+        const card = (p.raw as any)?.pluginCard;
+        if (card && typeof card === 'object') cardMap.set(p.sku, card);
+      }
+    }
+    const list = (rows as any[]).map((r) => {
+      const rec = this.fmtRecord(r);
+      const rid = this.ozonIdFromUrl(r.retailUrl) || this.ozonIdFromUrl(r.sku);
+      const retailPrice = rid != null && priceMap.has(rid) ? priceMap.get(rid)! : null;
+      rec.retailPrice = retailPrice; // 跟卖价格（₽）
+      rec.retailPriceCny = retailPrice != null ? r2(retailPrice * num(r.exchangeRate)) : null; // 折算人民币
+      // 中实跨境ERP 插件数据：月销量 + 完整经营指标卡（供前端"点击产品"弹窗展示）
+      const card = rid != null && cardMap.has(rid) ? cardMap.get(rid) : null;
+      rec.monthlySales = card && card.soldCount != null ? num(card.soldCount) : null; // 月销量
+      rec.pluginCard = card; // 完整插件数据（月销售额/广告占比/加购率/退货率等）
+      return rec;
+    });
+    return { list, total, page, pageSize };
+  }
+
+  /** 从 Ozon 链接（或纯数字 SKU）里提取商品 ID（取最后一串 ≥6 位数字） */
+  private ozonIdFromUrl(url?: string | null): string | null {
+    if (!url) return null;
+    const s = String(url).trim();
+    if (/^\d{6,}$/.test(s)) return s;
+    const matches = s.match(/\d{6,}/g);
+    return matches && matches.length ? matches[matches.length - 1] : null;
   }
 
   private fmtRecord(r: any) {
@@ -850,6 +890,7 @@ export class PricingService {
       '序号',
       '加35%',
       '定价',
+      '跟卖价格(₽)',
       '采购成本',
       '国际运费',
       '贴单费',
@@ -887,6 +928,7 @@ export class PricingService {
           r.mark || i + 1,
           num(r.markup35).toFixed(2),
           num(r.sellPrice).toFixed(2),
+          r.retailPrice != null ? num(r.retailPrice).toFixed(2) : '',
           num(r.purchaseCost).toFixed(2),
           num(r.shippingFee).toFixed(2),
           num(r.labelFee).toFixed(2),

@@ -34,6 +34,9 @@ export default function ProductsPage() {
   /** 卢布→人民币 汇率（1₽=¥），默认 0.0862，从定价设置读取当前值 */
   const [rate, setRate] = useState(0.0862);
 
+  /** 规则标签筛选项（从当前已加载列表里的 tags 汇总去重，供筛选下拉用） */
+  const [tagOptions, setTagOptions] = useState<{ label: string; value: string }[]>([]);
+
   /** 删除失败时给出人话提示（未登录要单独说，否则只看到一句 Unauthorized） */
   const delError = (e: any, what: string) => {
     const status = e?.response?.status;
@@ -171,6 +174,15 @@ export default function ProductsPage() {
       const { data } = await http.get('/products', { params });
       setList(data.list);
       setTotal(data.total);
+      setTagOptions(
+        Array.from(
+          new Set(
+            (data.list || [])
+              .flatMap((p: any) => (p.tags || []).map((t: any) => t.name))
+              .filter(Boolean),
+          ),
+        ).map((n: any) => ({ label: n, value: n })),
+      );
       setPage(p);
       setPageSize(s);
     } catch (e: any) {
@@ -207,7 +219,7 @@ export default function ProductsPage() {
   }, []);
 
   const exportCsv = () => {
-    const head = ['SKU', '标题', '类目', '品牌', '月销', '上架天', '加购%', '退货%', '评论', '广告%', '发货', '价格(₽)', '人民币(¥)', '链接'];
+    const head = ['SKU', '标题', '类目', '品牌', '月销', '上架天', '加购%', '退货%', '评论', '广告%', '发货', '价格(₽)', '人民币(¥)', '规则标签', '链接'];
     const q = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
     const lines = [head.join(',')].concat(
       list.map((p) =>
@@ -225,6 +237,7 @@ export default function ProductsPage() {
           p.salesSchema,
           p.price,
           rate > 0 ? (Number(p.price) * rate).toFixed(2) : '',
+          (p.tags || []).map((t: any) => t.name).join('/'),
           p.productUrl,
         ]
           .map(q)
@@ -284,6 +297,17 @@ export default function ProductsPage() {
             <Col xs={8} md={2}>
               <Form.Item name="salesSchema" label="发货">
                 <Select allowClear placeholder="全部" options={[{ label: 'FBS', value: 'FBS' }, { label: 'FBO', value: 'FBO' }, { label: 'rFBS', value: 'rFBS' }]} />
+              </Form.Item>
+            </Col>
+            <Col xs={12} md={3}>
+              <Form.Item name="tag" label="规则标签">
+                <Select
+                  allowClear
+                  showSearch
+                  placeholder="全部标签"
+                  notFoundContent="当前列表无标签（重新采集后才有）"
+                  options={tagOptions}
+                />
               </Form.Item>
             </Col>
             <Col xs={24} md={3}>
@@ -444,6 +468,19 @@ export default function ProductsPage() {
             },
             { title: '上架天', dataIndex: 'createDays', width: 80, align: 'right' },
             { title: '发货', dataIndex: 'salesSchema', width: 70, render: (v) => (v ? <Tag>{v}</Tag> : '—') },
+            {
+              title: '规则标签',
+              dataIndex: 'tags',
+              width: 150,
+              render: (tags: any) =>
+                tags && tags.length
+                  ? tags.map((t: any, i: number) => (
+                      <Tag key={i} color={t.color || 'blue'} style={{ marginBottom: 2 }}>
+                        {t.name}
+                      </Tag>
+                    ))
+                  : <span style={{ color: '#bbb' }}>—</span>,
+            },
             {
               title: '首次采集',
               dataIndex: 'firstSeenAt',

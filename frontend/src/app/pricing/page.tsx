@@ -355,6 +355,8 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [saving, setSaving] = useState(false);
+  // 点击"产品"查看中实跨境ERP插件数据的弹窗
+  const [cardRec, setCardRec] = useState<any>(null);
   const [editForm] = Form.useForm();
 
   /** 从 Excel《定价表》导入（按「工作表!行号」幂等，可勾选替换重导） */
@@ -502,14 +504,51 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
         <Space size={6}>
           {r.imageUrl ? <img src={r.imageUrl} alt="" style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 3 }} /> : null}
           <div>
-            <div>{v || <span style={{ color: '#bfbfbf' }}>—</span>}</div>
+            <div>
+              {v ? (
+                <a onClick={() => setCardRec(r)} title="点击查看中实跨境ERP插件数据">
+                  {v}
+                </a>
+              ) : (
+                <span style={{ color: '#bfbfbf' }}>—</span>
+              )}
+            </div>
             <div style={{ fontSize: 11, color: '#999' }}>{r.sku || ''}</div>
           </div>
         </Space>
       ),
     },
     { title: '渠道', dataIndex: 'channelName', key: 'channelName', width: 200, render: (v: any, r: any) => v ? `${v}${r.shipMode ? ' · ' + r.shipMode : ''}` : '—' },
-    { title: '定价(¥)', dataIndex: 'sellPrice', key: 'sellPrice', width: 90, render: (v: any, r: any) => `${money(v)} / ${money(r.sellPriceRub, 0)}₽` },
+    {
+      title: '定价(¥)',
+      dataIndex: 'sellPrice',
+      key: 'sellPrice',
+      width: 100,
+      render: (v: any, r: any) => {
+        // 定价高于跟卖价格 → 标红（跟卖价缺失则不变色）
+        const red = r.retailPrice > 0 && (r.sellPriceRub > 0 ? r.sellPriceRub > r.retailPrice : v > r.retailPriceCny);
+        return <span style={red ? { color: '#cf1322', fontWeight: 600 } : undefined}>{`${money(v)} / ${money(r.sellPriceRub, 0)}₽`}</span>;
+      },
+    },
+    {
+      title: '跟卖价(₽)',
+      dataIndex: 'retailPrice',
+      key: 'retailPrice',
+      width: 90,
+      render: (v: any, r: any) =>
+        v > 0 ? (
+          <span>{`${r.retailPriceCny ? `${money(r.retailPriceCny)} / ` : ''}${money(v, 0)}₽`}</span>
+        ) : (
+          <span style={{ color: '#bfbfbf' }}>—</span>
+        ),
+    },
+    {
+      title: '月销量',
+      dataIndex: 'monthlySales',
+      key: 'monthlySales',
+      width: 76,
+      render: (v: any) => (v != null ? <span>{v}</span> : <span style={{ color: '#bfbfbf' }}>—</span>),
+    },
     { title: '运费(¥)', dataIndex: 'shippingFee', key: 'shippingFee', width: 80, render: (v: any) => money(v) },
     { title: '采购(¥)', dataIndex: 'purchaseCost', key: 'purchaseCost', width: 80, render: (v: any) => money(v) },
     { title: '毛利润', dataIndex: 'grossProfit', key: 'grossProfit', width: 80, render: (v: any) => money(v) },
@@ -889,6 +928,77 @@ function RecordTab({ reloadKey }: { reloadKey: number }) {
         }}
         pagination={{ current: page, pageSize: 20, total, onChange: setPage }}
       />
+      {/* 中实跨境ERP 插件数据弹窗（点击"产品"打开） */}
+      <Modal
+        open={!!cardRec}
+        onCancel={() => setCardRec(null)}
+        footer={null}
+        width={640}
+        title={
+          <Space size={8}>
+            <span>中实跨境ERP 插件数据</span>
+            {cardRec?.imageUrl ? <img src={cardRec.imageUrl} alt="" style={{ width: 24, height: 24, borderRadius: 3, objectFit: 'cover' }} /> : null}
+            <span style={{ fontSize: 13, color: '#666', fontWeight: 400 }}>{cardRec?.name || cardRec?.sku || ''}</span>
+          </Space>
+        }
+      >
+        {cardRec?.pluginCard ? (
+          <>
+            <Descriptions
+              size="small"
+              column={2}
+              bordered
+              labelStyle={{ width: 130 }}
+              items={(
+                [
+                  ['category', '类目'],
+                  ['rfbsCommission', 'rFBS佣金'],
+                  ['sku', 'SKU'],
+                  ['brand', '品牌'],
+                  ['soldCount', '月销量'],
+                  ['soldSum', '月销售额'],
+                  ['salesDynamics', '月周转动态(%)'],
+                  ['drr', '广告费占比(%)'],
+                  ['daysInPromo', '参与促销天数'],
+                  ['discount', '参与促销折扣(%)'],
+                  ['promoRevenueShare', '促销活动转化(%)'],
+                  ['daysWithTrafarets', '付费推广天数'],
+                  ['qtyViewPdp', '商品卡浏览量'],
+                  ['convToCartPdp', '商品卡加购率(%)'],
+                  ['sessionCountSearch', '搜索浏览量'],
+                  ['convToCartSearch', '搜索加购率(%)'],
+                  ['convViewToOrder', '展示转化率(%)'],
+                  ['customClickRate', '商品点击率(%)'],
+                  ['salesSchema', '发货模式'],
+                  ['redemptionRate', '退货取消率(%)'],
+                  ['volume', '长宽高'],
+                  ['weight', '重量(g)'],
+                  ['createDate', '上架时间'],
+                  ['offers', '跟卖列表'],
+                  ['offerMinPrice', '跟卖最低价(¥)'],
+                  ['historicalAvgPrice', '历史平均价格(¥)'],
+                ] as [string, string][]
+              )
+                .filter(([k]) => cardRec.pluginCard[k] !== undefined && cardRec.pluginCard[k] !== null)
+                .map(([k, label]) => ({
+                  key: k,
+                  label,
+                  children:
+                    cardRec.pluginCard[k] === '暂无数据' ? (
+                      <span style={{ color: '#bfbfbf' }}>暂无数据</span>
+                    ) : (
+                      <span>{String(cardRec.pluginCard[k])}</span>
+                    ),
+                }))}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+              数据来源：浏览器「中实跨境ERP」插件浮层，随商品采集时自动存档（采集时间点快照，非实时）。
+            </div>
+          </>
+        ) : (
+          <Empty description="该产品暂无插件数据（需安装中实跨境ERP插件后重新采集此商品 / 或其跟卖链接未被采集进商品库）" />
+        )}
+      </Modal>
     </Card>
   );
 }
