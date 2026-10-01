@@ -15,6 +15,14 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (res) => res,
   (err) => {
+    const status = err?.response?.status;
+    // 登录态失效（token 过期/无效）：清掉本地登录态并跳登录页
+    if (status === 401 && typeof window !== 'undefined' && localStorage.getItem('ds_token')) {
+      localStorage.removeItem('ds_token');
+      localStorage.removeItem('ds_user');
+      window.location.href = '/login';
+      return Promise.reject(err);
+    }
     const msg = err?.response?.data?.message || err.message || '请求失败';
     const e: any = new Error(Array.isArray(msg) ? msg[0] : msg);
     e.response = err?.response; // 保留状态码，便于页面区分"未登录"等场景

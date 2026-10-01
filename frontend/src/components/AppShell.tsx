@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Avatar, Button, Form, Input, Layout, Menu, Modal, Space, Tag, message } from 'antd';
+import { Avatar, Button, Layout, Menu, Space, Tag, message } from 'antd';
 import {
   AppstoreOutlined,
   CalculatorOutlined,
@@ -31,56 +31,76 @@ const MENUS = [
   },
 ];
 
+function FullScreenLoading() {
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: '#999',
+        fontSize: 14,
+      }}
+    >
+      正在跳转登录…
+    </div>
+  );
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [openKeys, setOpenKeys] = useState<string[]>(pathname.startsWith('/pricing') ? ['pricing-group'] : []);
   const [user, setUser] = useState<any>(null);
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [form] = Form.useForm();
+  // null = 仍在检测登录态；true/false = 已确定
+  const [authed, setAuthed] = useState<boolean | null>(null);
 
+  // 初始化：读取本地登录态
   useEffect(() => {
-    const raw = typeof window !== 'undefined' ? localStorage.getItem('ds_user') : null;
-    if (raw) {
-      try {
-        setUser(JSON.parse(raw));
-      } catch (e) {
-        /* ignore */
+    const token = localStorage.getItem('ds_token');
+    const rawUser = localStorage.getItem('ds_user');
+    if (token) {
+      setAuthed(true);
+      if (rawUser) {
+        try {
+          setUser(JSON.parse(rawUser));
+        } catch (e) {
+          /* ignore */
+        }
       }
+    } else {
+      setAuthed(false);
     }
   }, []);
 
-  // 进入定价分组下的任意路由时，自动展开该子菜单
+  // 路由守卫：未登录强制跳登录页；已登录访问登录页则回首页
   useEffect(() => {
-    if (pathname.startsWith('/pricing')) {
-      setOpenKeys((k) => (k.includes('pricing-group') ? k : [...k, 'pricing-group']));
+    if (authed === null) return;
+    if (!authed && pathname !== '/login') {
+      const target = window.location.pathname + window.location.search;
+      router.replace('/login?redirect=' + encodeURIComponent(target));
+    } else if (authed && pathname === '/login') {
+      router.replace('/');
     }
-  }, [pathname]);
-
-  const login = async () => {
-    const values = await form.validateFields();
-    setLoading(true);
-    try {
-      const { data } = await http.post('/auth/login', values);
-      localStorage.setItem('ds_token', data.accessToken);
-      localStorage.setItem('ds_user', JSON.stringify(data.user));
-      setUser(data.user);
-      setOpen(false);
-      message.success('登录成功');
-    } catch (e: any) {
-      message.error(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [authed, pathname, router]);
 
   const logout = () => {
     localStorage.removeItem('ds_token');
     localStorage.removeItem('ds_user');
     setUser(null);
+    setAuthed(false);
     message.success('已退出');
   };
+
+  // 检测中：先不渲染任何内容，避免闪烁
+  if (authed === null) return <FullScreenLoading />;
+
+  // 登录页：不渲染后台布局，直接展示登录页自身
+  if (pathname === '/login') return <>{children}</>;
+
+  // 未登录（守卫已触发跳转）：占位，避免内容短暂泄露
+  if (!authed) return <FullScreenLoading />;
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -123,24 +143,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               </Button>
             </Space>
           ) : (
-            <Button type="primary" size="small" onClick={() => setOpen(true)}>
+            <Button type="primary" size="small" onClick={() => router.push('/login')}>
               登录
             </Button>
           )}
         </Header>
         <Content style={{ padding: 20 }}>{children}</Content>
       </Layout>
-
-      <Modal title="登录" open={open} onOk={login} onCancel={() => setOpen(false)} confirmLoading={loading} okText="登录">
-        <Form form={form} layout="vertical" initialValues={{ username: 'admin', password: 'admin123' }}>
-          <Form.Item name="username" label="登录名" rules={[{ required: true, message: '请输入登录名' }]}>
-            <Input placeholder="请输入" />
-          </Form.Item>
-          <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password placeholder="请输入" />
-          </Form.Item>
-        </Form>
-      </Modal>
     </Layout>
   );
 }
