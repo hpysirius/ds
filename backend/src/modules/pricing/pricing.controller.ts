@@ -320,9 +320,9 @@ export class PricingController {
   @Public()
   @Get('records/export')
   @Header('Content-Type', 'text/csv; charset=utf-8')
-  @ApiOperation({ summary: '导出核价表 CSV（列头与原定价表一致）' })
-  async export(@Res() res: Response) {
-    const csv = await this.pricingService.exportCsv();
+  @ApiOperation({ summary: '导出核价表 CSV（列头与原定价表一致，支持 keyword/listed/higherThanRetail 筛选）' })
+  async export(@Res() res: Response, @Query() query: QueryRecordDto) {
+    const csv = await this.pricingService.exportCsv(query);
     res.setHeader('Content-Disposition', 'attachment; filename="pricing.csv"');
     res.send(csv);
   }

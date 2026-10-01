@@ -20,12 +20,21 @@ const MENUS = [
   { key: '/collect', icon: <CloudDownloadOutlined />, label: '数据采集' },
   { key: '/products', icon: <AppstoreOutlined />, label: '商品库' },
   { key: '/screening', icon: <FilterOutlined />, label: '智能筛选' },
-  { key: '/pricing', icon: <CalculatorOutlined />, label: '定价' },
+  {
+    key: 'pricing-group',
+    icon: <CalculatorOutlined />,
+    label: '定价',
+    children: [
+      { key: '/pricing', label: '定价工作台' },
+      { key: '/pricing/records', label: '定价记录' },
+    ],
+  },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [openKeys, setOpenKeys] = useState<string[]>(pathname.startsWith('/pricing') ? ['pricing-group'] : []);
   const [user, setUser] = useState<any>(null);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -41,6 +50,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       }
     }
   }, []);
+
+  // 进入定价分组下的任意路由时，自动展开该子菜单
+  useEffect(() => {
+    if (pathname.startsWith('/pricing')) {
+      setOpenKeys((k) => (k.includes('pricing-group') ? k : [...k, 'pricing-group']));
+    }
+  }, [pathname]);
 
   const login = async () => {
     const values = await form.validateFields();
@@ -76,9 +92,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <Menu
           mode="inline"
           selectedKeys={[pathname]}
+          openKeys={openKeys}
+          onOpenChange={setOpenKeys}
           items={MENUS}
           style={{ borderInlineEnd: 'none' }}
-          onClick={(e) => router.push(e.key)}
+          onClick={(e) => {
+            if (e.key.startsWith('/')) router.push(e.key);
+          }}
         />
       </Sider>
       <Layout>

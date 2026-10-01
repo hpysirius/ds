@@ -237,6 +237,10 @@ export class QueryRecordDto {
   @IsOptional()
   @IsIn(['true', 'false', '1', '0'])
   listed?: string;
+  @ApiPropertyOptional({ description: "按「定价是否高于跟卖价」筛选：'true' 只看高于跟卖价 / 'false' 只看不高于 / 不传看全部" })
+  @IsOptional()
+  @IsIn(['true', 'false', '1', '0'])
+  higherThanRetail?: string;
 }
 
 export class UpdateSettingDto {

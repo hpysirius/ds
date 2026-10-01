@@ -515,15 +515,24 @@ export class PricingService {
     // 只看已上架 / 未上架（query.listed 是字符串 'true'/'false'）
     if (query.listed === 'true' || query.listed === '1') where.listed = true;
     else if (query.listed === 'false' || query.listed === '0') where.listed = false;
-    const [rows, total] = await Promise.all([
-      this.prisma.pricingRecord.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
-      this.prisma.pricingRecord.count({ where }),
-    ]);
+    // 是否按"定价高于跟卖价"筛选：该字段依赖跟卖价（需联商品库），故拉全量后在内存过滤
+    const doFilter = query.higherThanRetail === 'true' || query.higherThanRetail === 'false';
+    let rows: any[];
+    let total: number;
+    if (doFilter) {
+      rows = await this.prisma.pricingRecord.findMany({ where, orderBy: { createdAt: 'desc' }, take: 5000 });
+      total = rows.length;
+    } else {
+      [rows, total] = await Promise.all([
+        this.prisma.pricingRecord.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+        }),
+        this.prisma.pricingRecord.count({ where }),
+      ]);
+    }
     // 附带跟卖价格：按跟卖链接 / SKU 的 Ozon ID 去商品库查当前售价（卢布）
     const idSet = new Set<string>();
     for (const r of rows as any[]) {
@@ -553,8 +562,20 @@ export class PricingService {
       const card = rid != null && cardMap.has(rid) ? cardMap.get(rid) : null;
       rec.monthlySales = card && card.soldCount != null ? num(card.soldCount) : null; // 月销量
       rec.pluginCard = card; // 完整插件数据（月销售额/广告占比/加购率/退货率等）
+      // 定价是否高于跟卖价（与列表标红逻辑一致：优先卢布比，无卢布则人民币比；跟卖价缺失视为否）
+      const sellRub = num(r.sellPriceRub);
+      const sellCny = num(r.sellPrice);
+      rec.higherThanRetail = retailPrice > 0 && (sellRub > 0 ? sellRub > retailPrice : sellCny > rec.retailPriceCny);
       return rec;
     });
+    // 内存过滤：只看"高于跟卖价 / 不高于"
+    if (doFilter) {
+      const want = query.higherThanRetail === 'true';
+      const filtered = list.filter((r) => r.higherThanRetail === want);
+      total = filtered.length;
+      rows = filtered.slice((page - 1) * pageSize, page * pageSize);
+      return { list: rows, total, page, pageSize };
+    }
     return { list, total, page, pageSize };
   }
 
@@ -884,13 +905,14 @@ export class PricingService {
   }
 
   /** 导出成与《定价表模版》列头一致的 CSV */
-  async exportCsv() {
-    const { list } = await this.listRecords({ pageSize: 100000 });
+  async exportCsv(query: QueryRecordDto = {}) {
+    const { list } = await this.listRecords({ ...query, pageSize: 100000 });
     const head = [
       '序号',
       '加35%',
       '定价',
       '跟卖价格(₽)',
+      '定价高于跟卖价',
       '采购成本',
       '国际运费',
       '贴单费',
@@ -929,6 +951,7 @@ export class PricingService {
           num(r.markup35).toFixed(2),
           num(r.sellPrice).toFixed(2),
           r.retailPrice != null ? num(r.retailPrice).toFixed(2) : '',
+          r.higherThanRetail ? '是' : '否',
           num(r.purchaseCost).toFixed(2),
           num(r.shippingFee).toFixed(2),
           num(r.labelFee).toFixed(2),
