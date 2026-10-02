@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Header, Param, ParseIntPipe, Patch, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Headers, Param, ParseIntPipe, Patch, Post, Query, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { PricingService } from './pricing.service';
@@ -232,22 +232,22 @@ export class PricingController {
   @Public()
   @Get('extension/pending')
   @ApiOperation({ summary: '插件拉取待采集清单（缺类目/主图/价格的商品）' })
-  extensionPending(@Query('limit') limit?: string) {
-    return this.sourcingService.extensionPending(Number(limit) || 20);
+  extensionPending(@Query('limit') limit?: string, @Headers('authorization') auth?: string) {
+    return this.sourcingService.extensionPending(Number(limit) || 20, auth);
   }
 
   @Public()
   @Post('extension/product-info')
   @ApiOperation({ summary: '插件上报一条商品数据（字段与浏览器抓取一致）' })
-  extensionIngest(@Body() dto: any) {
-    return this.sourcingService.ingestFromExtension(dto);
+  extensionIngest(@Body() dto: any, @Headers('authorization') auth?: string) {
+    return this.sourcingService.ingestFromExtension(dto, auth);
   }
 
   @Public()
   @Post('extension/products')
   @ApiOperation({ summary: '插件从列表页批量上报商品（新商品自动入库）' })
-  extensionIngestList(@Body() dto: any) {
-    return this.sourcingService.ingestProductList(dto);
+  extensionIngestList(@Body() dto: any, @Headers('authorization') auth?: string) {
+    return this.sourcingService.ingestProductList(dto, auth);
   }
 
   @Public()

@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -351,7 +352,35 @@ export class SourcingService {
   constructor(
     private readonly browser: BrowserService,
     private readonly prisma: PrismaService,
+    private readonly jwt: JwtService,
   ) {}
+
+  /**
+   * 从插件带上来的 Authorization 头解析「采集应归属的店铺」。
+   *
+   * 插件跑在用户的正常浏览器里，通过内容脚本从 ds 网页读到当前登录 token 一起发过来。
+   * 员工账号 → 返回其 storeId（数据归本店）；超管或未登录/无效 token → 返回 null
+   * （归超管「全部」视图，保持旧行为）。任何异常都吞掉返回 null，绝不能因为解析失败就拒绝采集。
+   */
+  private async resolveStoreId(authHeader?: string): Promise<number | null> {
+    const token = String(authHeader || '').replace(/^Bearer\s+/i, '').trim();
+    if (!token) return null;
+    try {
+      const payload: any = await this.jwt.verifyAsync(token);
+      const id = Number(payload?.sub);
+      if (!Number.isInteger(id) || id <= 0) return null;
+      const u = await this.prisma.user.findUnique({
+        where: { id },
+        select: { storeId: true, status: true, role: true },
+      });
+      if (!u || u.status !== 1) return null;
+      // 超管默认不归属具体店铺（其「全部」视图 storeId 为 null）
+      if (u.role === 'super_admin') return u.storeId ?? null;
+      return u.storeId ?? null;
+    } catch (e) {
+      return null;
+    }
+  }
 
   /**
    * 补商品主图：先把已有 raw JSON 里的 imageUrl 捡回来（免费、瞬时），
@@ -1493,7 +1522,7 @@ export class SourcingService {
   private async persistProbe(
     sku: string,
     best: any,
-    opts?: { create?: boolean },
+    opts?: { create?: boolean; storeId?: number | null },
   ): Promise<{ ok: boolean; fields: string[]; reason?: string; created?: boolean }> {
     /*
      * 插件在**商品详情页**手动点「采集当前商品页」时，这个商品往往还没进过库
@@ -1505,7 +1534,7 @@ export class SourcingService {
     let created = false;
     if (!product) {
       if (!opts?.create) return { ok: false, fields: [], reason: '商品不存在' };
-      product = await this.prisma.product.create({ data: { sku } });
+      product = await this.prisma.product.create({ data: { sku, storeId: opts?.storeId ?? null } });
       created = true;
     }
 
@@ -1546,6 +1575,9 @@ export class SourcingService {
         reason: created ? '页面没读到任何可用字段，未录入' : 'Ozon 详情页未提供任何可补充的字段',
       };
     }
+    // 归属店铺：新建时已写入；这条商品若之前没有归属，则按采集人的店铺认领
+    // （已有归属的不动 —— 不抢别的店已绑定的商品）
+    if (opts?.storeId != null && product.storeId == null) data.storeId = opts.storeId;
     await this.prisma.product.update({ where: { sku }, data });
     // 只有真读到指标才落一条记录，避免每次都插一条空行
     const metricKeys = [
@@ -1570,7 +1602,7 @@ export class SourcingService {
         },
       });
     }
-    const fields = Object.keys(data).filter((k) => k !== 'raw' && k !== 'lastSeenAt');
+    const fields = Object.keys(data).filter((k) => k !== 'raw' && k !== 'lastSeenAt' && k !== 'storeId');
     return { ok: true, fields, created };
   }
 
@@ -1582,10 +1614,12 @@ export class SourcingService {
    * 所以让「DS 采集助手」插件跑在**正常浏览器**里抓数据，再 POST 回后端落库 —— 快、稳、不被拦。
    */
 
-  /** 插件拉取待采集清单（缺类目/主图/价格的商品） */
-  async extensionPending(limit = 20) {
+  /** 插件拉取待采集清单（缺类目/主图/价格的商品）。带员工身份时只返回本店商品。 */
+  async extensionPending(limit = 20, authHeader?: string) {
+    const storeId = await this.resolveStoreId(authHeader);
+    const where = { ...MISSING_FIELDS_WHERE, ...(storeId != null ? { storeId } : {}) };
     const rows = await this.prisma.product.findMany({
-      where: MISSING_FIELDS_WHERE,
+      where,
       orderBy: { id: 'desc' },
       take: Math.max(1, Math.min(limit || 20, 200)),
       select: { sku: true, productUrl: true },
@@ -1595,12 +1629,12 @@ export class SourcingService {
         sku: r.sku,
         url: r.productUrl || `https://www.ozon.ru/product/${r.sku}/`,
       })),
-      remaining: await this.prisma.product.count({ where: MISSING_FIELDS_WHERE }),
+      remaining: await this.prisma.product.count({ where }),
     };
   }
 
-  /** 插件上报一条商品数据（字段与浏览器抓取完全一致） */
-  async ingestFromExtension(dto: any) {
+  /** 插件上报一条商品数据（字段与浏览器抓取完全一致）。带员工身份则归到该员工店铺。 */
+  async ingestFromExtension(dto: any, authHeader?: string) {
     // 先按 dto.sku，没有就从 URL 里兜出 sku（/product/xxx-1234567890/）
     let sku = String(dto?.sku || '').trim();
     if (!sku && dto?.url) {
@@ -1625,8 +1659,9 @@ export class SourcingService {
      * 详情页采集允许**新建**：用户手动在某个商品页点「采集当前商品页」，
      * 本来就是为了把这个商品录进系统 —— 库里没有这条时不应该被一句"商品不存在"打回。
      */
-    const r = await this.persistProbe(sku, best, { create: true });
-    return { sku, ...r };
+    const storeId = await this.resolveStoreId(authHeader);
+    const r = await this.persistProbe(sku, best, { create: true, storeId });
+    return { sku, ...r, storeId };
   }
 
   /**
@@ -1636,7 +1671,8 @@ export class SourcingService {
    * 不能只更新已有的。列表页能拿到的是 sku / 标题 / 价格 / 主图 / 链接 / 评分评论，
    * 类目、卖家这些还得靠详情页补 —— 所以这里只写拿得到的字段，绝不把已有值覆盖成空。
    */
-  async ingestProductList(dto: any) {
+  async ingestProductList(dto: any, authHeader?: string) {
+    const storeId = await this.resolveStoreId(authHeader);
     const items = Array.isArray(dto?.items) ? dto.items : [];
     const sourceUrl = dto?.sourceUrl ? String(dto.sourceUrl).slice(0, 990) : null;
     let created = 0;
@@ -1687,9 +1723,11 @@ export class SourcingService {
       }
       data.lastSeenAt = new Date();
 
-      const exist = await this.prisma.product.findUnique({ where: { sku }, select: { id: true, title: true } });
+      const exist = await this.prisma.product.findUnique({ where: { sku }, select: { id: true, title: true, storeId: true } });
       if (exist) {
         const patch: any = { ...data };
+        // 无归属的旧商品按采集人店铺认领（不抢别店已绑定的商品）
+        if (storeId != null && exist.storeId == null) patch.storeId = storeId;
         // 自愈：这一轮没解析出标题、但库里存的是一条「促销标签/价格串/选品插件浮层文本」脏标题
         // → 就地清掉。否则脏标题会永远赖着不走（解析不到标题时不覆盖，脏值就永久残留）。
         const oldT = String(exist.title || '');
@@ -1699,11 +1737,11 @@ export class SourcingService {
         await this.prisma.product.update({ where: { sku }, data: patch });
         updated++;
       } else {
-        await this.prisma.product.create({ data: { sku, ...data } });
+        await this.prisma.product.create({ data: { sku, storeId: storeId ?? null, ...data } });
         created++;
       }
     }
-    return { total: items.length, created, updated, skipped };
+    return { total: items.length, created, updated, skipped, storeId };
   }
 
   /**

@@ -15,7 +15,9 @@
 #
 # 注意事项：
 #   - 数据库数据在服务器 MySQL 里（/root/ds 只是代码），删除 /root/ds 不会丢数据。
-#   - 前端 NEXT_PUBLIC_API_URL 必须在构建期确定，已写死为 http://114.132.99.141/api（走 80 端口 nginx 反代）。
+#   - 前端 NEXT_PUBLIC_API_URL 必须在构建期确定，这里固定为相对路径 "/api"（同源，走 80 端口 nginx 反代），
+#     因此域名（http://ozon.qinxianty.com）和旧 IP（http://114.132.99.141）都能直接用，互不干扰。
+#   - nginx 站点配置由本脚本生成（/etc/nginx/conf.d/ds.conf），server_name 同时含域名与 IP。
 #   - 仅腾讯云安全组需放行 TCP 80；3100/3101 不必对外开。
 #
 # 用法：
@@ -71,7 +73,11 @@ DATABASE_URL="mysql://root:${PW}@localhost:3306/ds"
 JWT_SECRET="${JWT}"
 JWT_EXPIRATION="7d"
 PORT=3101
-FRONTEND_URL="http://114.132.99.141"
+# 允许的前端来源（CORS 白名单，逗号分隔）：域名 + 旧 IP 都保留
+FRONTEND_URL="http://ozon.qinxianty.com,http://114.132.99.141"
+# 「本地抓取回退」用：线上页面（域名/IP）里操作核价时，浏览器会带上该 origin 请求用户本机后端，
+# 本机后端必须放行这两个 origin，否则会被 CORS 拦掉
+PUBLIC_SITE_URL="http://ozon.qinxianty.com,http://114.132.99.141"
 CHROME_DEBUG_PORT=9222
 CHROME_DEBUG_PROFILE="/tmp/chrome_debug_profile"
 CHROME_APP_PATH="/tmp/ChromeDebug.app"
@@ -79,8 +85,12 @@ UPLOAD_DIR="./uploads"
 MAX_FILE_SIZE=10485760
 ENV
 
+# NEXT_PUBLIC_API_URL 必须是「相对路径 /api」：
+#   - 走同源（页面在哪个域名/端口，请求就打到哪），由 nginx 把 /api/ 反代到 3101；
+#   - 这样无论用域名 http://ozon.qinxianty.com 还是旧 IP 访问都不会跨域，也不用再改构建配置。
+#   （本地开发不读这个文件，走 lib/api.ts 里的默认值 http://localhost:3101）
 cat > frontend/.env.local <<ENV
-NEXT_PUBLIC_API_URL="http://114.132.99.141/api"
+NEXT_PUBLIC_API_URL="/api"
 BACKEND_URL="http://localhost:3101"
 ENV
 
@@ -151,7 +161,62 @@ pm2 delete ds-backend ds-frontend 2>/dev/null || true
 pm2 start ecosystem.config.js 2>&1 | tail -8
 pm2 save 2>&1 | tail -2
 pm2 startup >/dev/null 2>&1 || true
+
+# ---- nginx 站点配置（幂等重建；server_name 同时覆盖域名与旧 IP）----
+#     注意：这里的 $host / $remote_addr 等是 nginx 变量，需原样写入，故 heredoc 用 'NGINX' 不展开
+cp -a /etc/nginx/conf.d/ds.conf /etc/nginx/conf.d/ds.conf.bak 2>/dev/null || true
+cat > /etc/nginx/conf.d/ds.conf <<'NGINX'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    # 主域名 + 旧 IP 都收敛到同一个站点（_ 兜底，防止其他域名/直连 IP 落到空站点）
+    server_name ozon.qinxianty.com 114.132.99.141 _;
+
+    client_max_body_size 50m;
+
+    # backend API -> strip /api prefix when forwarding
+    location /api/ {
+        proxy_pass http://127.0.0.1:3101/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # backend static uploads
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:3101;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # frontend web app
+    location / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+NGINX
+
 systemctl enable --now nginx >/dev/null 2>&1 || true
+if nginx -t >/dev/null 2>&1; then
+  systemctl reload nginx
+  echo "nginx: 配置已更新并重载"
+else
+  echo "ERROR: nginx 配置校验失败，已回滚为备份配置"
+  cp -a /etc/nginx/conf.d/ds.conf.bak /etc/nginx/conf.d/ds.conf 2>/dev/null || true
+  systemctl reload nginx || true
+  exit 1
+fi
+
 sleep 4
 pm2 status 2>&1 | tail -8
 EOF
@@ -160,8 +225,12 @@ echo "==> 健康检查"
 sleep 3
 ssh -o BatchMode=yes -o ConnectTimeout=8 "$SERVER" \
   "curl -s -o /dev/null -w 'frontend /            -> %{http_code}\n' http://localhost:80/ ; \
-   curl -s -o /dev/null -w 'api /api/auth/profile -> %{http_code}\n' http://localhost:80/api/auth/profile"
+   curl -s -o /dev/null -w 'api /api/auth/profile -> %{http_code}\n' http://localhost:80/api/auth/profile ; \
+   curl -s -o /dev/null -w 'domain  / (Host头)     -> %{http_code}\n' -H 'Host: ozon.qinxianty.com' http://localhost:80/ ; \
+   curl -s -o /dev/null -w 'domain  /api/auth/profile -> %{http_code}\n' -H 'Host: ozon.qinxianty.com' http://localhost:80/api/auth/profile"
 
 echo "==> 完成 ✅"
-echo "访问地址： http://114.132.99.141/      (账号 admin / admin123)"
-echo "后端 API： http://114.132.99.141/api"
+echo "访问地址： http://ozon.qinxianty.com/      (账号 admin / admin123)"
+echo "备用地址： http://114.132.99.141/"
+echo "后端 API： http://ozon.qinxianty.com/api"
+echo "插件后端地址请填： http://ozon.qinxianty.com/api"

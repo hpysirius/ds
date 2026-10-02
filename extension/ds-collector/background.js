@@ -13,10 +13,40 @@
 import { collectProduct, probeReady, collectList, scrollDown } from './collector-lib.js';
 import { applyRulesToItem, passesFilter } from './rules-lib.js';
 
-const DEFAULT_API = 'http://localhost:3101';
+/**
+ * 后端地址默认值。
+ * 线上主站已从 IP 换成域名（走 nginx，接口前缀 /api），所以默认直接连域名；
+ * 本地开发请在弹窗点「填本地」或手填 http://localhost:3101。
+ */
+const DEFAULT_API = 'http://ozon.qinxianty.com/api';
+/**
+ * 老的线上地址 → 新域名地址的自动迁移表。
+ * 之前用户填过旧 IP 的，插件升级后自动改到域名，省得手动重填；其余自定义地址不动。
+ */
+const LEGACY_API_MAP = {
+  'http://114.132.99.141': DEFAULT_API,
+  'http://114.132.99.141/api': DEFAULT_API,
+};
+
+/** 把旧的 IP 地址静默升级为域名地址（只动表里已知的旧值，不动用户自定义地址） */
+async function migrateApiBase() {
+  try {
+    const s = await chrome.storage.local.get(['apiBase']);
+    const cur = String(s.apiBase || '')
+      .trim()
+      .replace(/\/+$/, '');
+    const next = LEGACY_API_MAP[cur];
+    if (next) await chrome.storage.local.set({ apiBase: next });
+  } catch (e) {
+    /* 迁移失败不影响使用 */
+  }
+}
+migrateApiBase();
+
 const STATE_KEY = 'ds_state';
 const RULES_KEY = 'rules';
 const FILTER_KEY = 'ds_filter_mode';
+const IDENTITY_KEY = 'ds_identity';
 
 /** 采集规则（规则管理页维护，采集时逐条匹配给商品打标签） */
 async function getRules() {
@@ -33,6 +63,24 @@ async function getRules() {
 async function getFilterMode() {
   const s = await chrome.storage.local.get([FILTER_KEY]);
   return !!s[FILTER_KEY];
+}
+
+/**
+ * 当前登录身份（由内容脚本 identity-bridge.js 从 ds 网页 localStorage 里读出来推过来）。
+ * 形如 { token, userId, username, role, storeId, storeName }；没登录过就是 null。
+ * 上报时带上它的 token，后端据此把采集数据归到该员工所在店铺。
+ */
+async function getIdentity() {
+  const s = await chrome.storage.local.get([IDENTITY_KEY]);
+  return s[IDENTITY_KEY] || null;
+}
+
+/** 合并请求头：默认 JSON + 已绑定身份时带上 Bearer token */
+async function buildHeaders(base) {
+  const h = { 'Content-Type': 'application/json', ...(base || {}) };
+  const id = await getIdentity();
+  if (id && id.token) h.Authorization = `Bearer ${id.token}`;
+  return h;
 }
 
 /** 给单个商品按规则打标签（命中才加 item.tags，永远不覆盖已有标签） */
@@ -107,10 +155,10 @@ const NET_ERR = '连不上后端：请确认 ds 后端已启动（bash scripts/s
  * 但 Chrome 明确豁免「本地 → 本地」的请求：所以在 localhost:3100 的页面里发 fetch 到 3101
  * 完全不受 LNA 管，而 3100 又在后端 CORS 白名单里（FRONTEND_URL）。
  */
-function relayFetchFn(url, method, body) {
+function relayFetchFn(url, method, body, headers) {
   return fetch(url, {
     method: method || 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers && typeof headers === 'object' ? headers : { 'Content-Type': 'application/json' },
     body: body || undefined,
   })
     .then(async (r) => ({ ok: r.ok, status: r.status, body: await r.text() }))
@@ -154,10 +202,11 @@ function fakeResponse(r) {
  * fetch 包装：先直连（带 targetAddressSpace 声明）；被 LNA 拦时自动落到 localhost 中继。
  */
 async function safeFetch(url, opts) {
+  const headers = await buildHeaders(opts && opts.headers);
   try {
     // 注意：targetAddressSpace 只能对「确实是本地」的地址声明。
     // 对公网服务器声明 'local' 会让 Chrome 判定地址空间不符 → 直接网络错误（Failed to fetch）。
-    const o = isLocalApi(url) ? { ...opts, targetAddressSpace: 'local' } : { ...opts };
+    const o = isLocalApi(url) ? { ...opts, headers, targetAddressSpace: 'local' } : { ...opts, headers };
     return await fetch(url, o);
   } catch (e) {
     // 公网服务器不受 LNA 管，本地中继也帮不上忙 —— 直接抛出，别浪费时间开中继页
@@ -169,7 +218,7 @@ async function safeFetch(url, opts) {
     const [res] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: relayFetchFn,
-      args: [url, (opts && opts.method) || 'GET', (opts && opts.body) || null],
+      args: [url, (opts && opts.method) || 'GET', (opts && opts.body) || null, headers],
     });
     if (!res || !res.result) throw new Error(NET_ERR);
     if (res.result.error) throw new Error(`${NET_ERR}（中继也失败：${String(res.result.error).slice(0, 80)}）`);
@@ -684,7 +733,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: true });
           break;
         case 'DS_STATUS':
-          sendResponse({ ok: true, state: await getState(), api: await getApi() });
+          sendResponse({ ok: true, state: await getState(), api: await getApi(), identity: await getIdentity() });
+          break;
+        case 'DS_SET_IDENTITY':
+          await chrome.storage.local.set({ [IDENTITY_KEY]: msg.identity || null });
+          sendResponse({ ok: true, identity: msg.identity || null });
           break;
         case 'DS_SET_API':
           await chrome.storage.local.set({ apiBase: normalizeApi(msg.api) });

@@ -224,10 +224,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               alignItems: 'center',
               justifyContent: 'space-between',
               height: 56,
+              // antd Layout.Header 默认 line-height: 64px，会被子元素继承；
+              // 行内元素的基线对齐会被这个超大的行高放大，导致图标/标签错位，这里重置掉
+              lineHeight: 'normal',
               gap: 12,
             }}
           >
-            <StoreSwitcher />
+            <StoreSwitcher user={user} />
             {user ? (
               <Space>
                 <Tag color={user.role === 'super_admin' ? 'red' : user.role === 'admin' ? 'blue' : 'default'}>
@@ -252,11 +255,46 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** 顶部店铺切换器：仅超级管理员可见，可在「全部店铺」与具体店铺间切换；普通员工锁定在本店 */
-function StoreSwitcher() {
+/**
+ * 顶部左侧「店铺」区域：
+ * - 超级管理员：可切换的店铺选择器（全部店铺 / 具体店铺）；
+ * - 普通员工：只读展示其所属店铺（员工锁定本店，不能切换），保证左侧不再空白。
+ *
+ * 对齐说明：图标（anticon）自带 `vertical-align: -0.125em`，且其基线取自身底边；
+ * 而 Tag 的基线取内部文字基线。两者若放在行内流里按基线对齐，图标会高出约 2px，
+ * 看起来就是「图标没和店名对齐」。所以这里统一用 flex + align-items:center，
+ * 并把图标的 display 设为 block（脱离行内基线体系），保证图标与店名严格垂直居中。
+ */
+function StoreSwitcher({ user }: { user: any }) {
   const { isSuper, stores, loading, currentStoreId, setCurrentStoreId } = useStore();
 
-  if (!isSuper) return null;
+  const iconStyle: React.CSSProperties = { display: 'block', color: '#8c8c8c' };
+
+  // 员工：左只读显示所属店铺，右侧仍是用户信息
+  if (!isSuper) {
+    const name = user?.storeName;
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <ShopOutlined style={iconStyle} />
+        {name ? (
+          <Tag
+            color="blue"
+            style={{ margin: 0, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            title="你所属的店铺；如需变更请联系超级管理员"
+          >
+            {name}
+          </Tag>
+        ) : (
+          <span
+            style={{ fontSize: 13, color: '#bfbfbf', lineHeight: '20px' }}
+            title="当前账号还未分配店铺，请联系超级管理员"
+          >
+            未分配店铺
+          </span>
+        )}
+      </div>
+    );
+  }
 
   const options = [
     { value: 'all', label: '全部店铺' },
@@ -264,8 +302,8 @@ function StoreSwitcher() {
   ];
 
   return (
-    <Space size={6}>
-      <ShopOutlined style={{ color: '#8c8c8c' }} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <ShopOutlined style={iconStyle} />
       <Select
         size="small"
         style={{ width: 180 }}
@@ -275,6 +313,6 @@ function StoreSwitcher() {
         onChange={(v: string) => setCurrentStoreId(v === 'all' ? null : Number(v))}
         placeholder="选择店铺"
       />
-    </Space>
+    </div>
   );
 }

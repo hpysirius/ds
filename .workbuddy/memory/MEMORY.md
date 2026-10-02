@@ -2,7 +2,11 @@
 
 ## 服务与地址
 - 本地：前端 http://localhost:3100、后端 http://localhost:3101（后端无 /api 前缀）；`bash restart.sh [--no-build]` 起，`bash stop.sh` 停。
-- 线上：http://114.132.99.141（admin/admin123），API 前缀 `/api`，nginx 反代；`./deploy.sh` 一键部署（服务器上 npm install + prisma generate + build + db push + pm2 重启）。
+- 线上（**主入口是域名**）：http://ozon.qinxianty.com（admin/admin123），备用 http://114.132.99.141（两者等价，nginx `server_name` 都收敛到同一站点）。API 前缀 `/api`，nginx 反代到 3101；`./deploy.sh` 一键部署（服务器上 npm install + prisma generate + build + db push + pm2 重启 + 重写 nginx 站点配置）。
+- **前端 API 地址用相对路径 `/api`**（`deploy.sh` 生成 `frontend/.env.local` 的 `NEXT_PUBLIC_API_URL="/api"`）：
+  同源、免跨域，换域名/换 IP 都不用改构建配置。**不要再写死 `http://IP/api`** —— 那样用域名打开会跨域、登录直接失败。
+- 后端 CORS 白名单 = `FRONTEND_URL` + `PUBLIC_SITE_URL` + `EXTRA_CORS_ORIGINS`（逗号分隔，`main.ts`）。默认值含 `http://ozon.qinxianty.com` 与 `http://114.132.99.141`。
+  「本地 1688 抓取回退」依赖它：线上页面里请求用户本机 3101 时，本机后端必须放行线上 origin（本地 `backend/.env` 也设了 `PUBLIC_SITE_URL`）。
 - 数据库数据在 MySQL（`backend/prisma/schema.prisma`），线上库与本地库**互相独立**（线上 pricing 记录为空，本地有 178 条）。
 
 ## 后端约定
@@ -22,20 +26,26 @@
 - 后端隔离核心：`common/constants/permissions.ts` 的 `storeWhereClause(user, reqStoreId?)`（超管按 reqStoreId、员工按 user.storeId；员工无店→storeId:-1 必空）与 `currentStoreId(user, reqStoreId?)`。各 service 用 `scope(user)` 注入 where、越权返回 404（不暴露存在性）。
 - 超管切店 = 前端传 `storeId` query/body；**ValidationPipe forbidNonWhitelisted 必须为每个接收 storeId 的 DTO 显式声明该字段**（QueryProductDto/QueryTaskDto/QueryRecordDto/QueryRunDto 已加）。
 - 仅超管可建/改/删店铺（`StoresModule`，删除时外键 SetNull 自动解绑，不误删数据）；前端店铺管理在 `系统管理 → 店铺管理`（`/system/stores`，仅超管可见）。
-- 采集插件 `@Public` 上报路径写 `storeId=null`（归超管「全部」视图）。
-- **存量数据**：线上历史数据 storeId 全为 null，仅超管「全部」视图可见；要归属具体店铺需另写一次迁移 UPDATE（待定，未做）。
+- 采集插件上报带员工 token 时按 `resolveStoreId` 归店（见下节插件条目）；无 token 才写 `storeId=null`（归超管「全部」视图）。
+- **存量数据**：线上 625 条 / 本地 739 条历史商品 storeId 全为 null，仅超管「全部」视图可见；要归属具体店铺需另写一次 `UPDATE product SET storeId=? WHERE storeId IS NULL` 迁移（待定，未做）。
 
 ## 浏览器插件 ds-collector（`extension/ds-collector`，MV3）
-- 文件：`popup.html/js`（弹窗+1688回填）、`rules.html/js`+`rules-lib.js`（采集规则）、`background.js`（service worker，采集编排）、`collector-lib.js`（注入页面的抓取逻辑）、`manifest.json`。
+- 文件：`popup.html/js`（弹窗+1688回填）、`rules.html/js`+`rules-lib.js`（采集规则）、`identity-bridge.js`（身份桥 content script）、`background.js`（service worker，采集编排）、`collector-lib.js`（注入页面的抓取逻辑）、`manifest.json`。
 - 采集上报走后端 `@Public` 的 `/pricing/extension/*`；本地需经 localhost:3100 中继绕过 Chrome LNA 限制。
+- **归属店铺（2026-10-02 新增）**：`identity-bridge.js` 注入 ds 网页读 `localStorage.ds_token`/`ds_user`，推给 background 存 `ds_identity`；`safeFetch`/`relayFetchFn` 自动带 `Authorization: Bearer <token>`；后端 `PricingModule` 注册 JwtModule，`SourcingService.resolveStoreId(authHeader)` 解析员工 storeId → 采集数据归本店。无 token/无效 token → storeId=null（归超管「全部」，兼容旧行为）。**插件后端地址须与所登录的 ds 站点同源（同一 JWT_SECRET）**，否则解析不出店铺。弹窗显示「采集归属」便于自查。
 - **规则默认只「打标签」不「过滤」**：`rules-lib.js` 的 `applyRulesToItem` 给命中商品加 `item.tags`（存 `products.raw.tags`）；采集是全量的。
 - **过滤模式（2026-10-02 新增）**：`chrome.storage.local.ds_filter_mode` 开关（popup 复选框）。开时 `background.js` 用 `rules-lib.js` 的 `passesFilter(item, rules)` 在入库前丢弃未命中商品；`ruleHasConstraints` 保证只有「带条件」的规则才当过滤器（无条件规则命中全部、不计入）。默认关。
 - 改插件后必须到 `chrome://extensions` **重新加载扩展**才生效；改 `manifest.json` 版本号便于确认已更新。
+- **后端地址配置（2026-10-02 换域名时更新）**：`DEFAULT_API = 'http://ozon.qinxianty.com/api'`；popup「填服务器」预设同为该值，「填本地」= `http://localhost:3101`；`background.js` 有 `LEGACY_API_MAP` 在启动时把旧的 `http://114.132.99.141[/api]` 静默升级为域名（自定义地址不动）。
+  `manifest.json` 的 `host_permissions` 与 `content_scripts.matches` **必须同时包含所有要用的站点 origin**（含 `http://ozon.qinxianty.com/*`）——漏了 matches 的话，域名页面上的登录身份读不到，采集数据就归不了店铺。
 - 坑：`await` 不能写在 `Array.filter` 的非 async 回调里（把 `getRules()` 提前到外面）。
 
 ## 沙箱构建/运行坑（每次都会遇到）
-- 前台 Bash 里 `nohup ... &` 起的服务，在该次工具调用结束时会**被杀** → 必须用后台任务方式启动。
+- 前台 Bash 里 `nohup ... &` 起的服务，在该次工具调用结束时会**被杀** → 必须用后台任务方式启动（`restart.sh`/前台 `start.sh` 直接在普通调用里跑也会被回收，甚至把已起的服务一起带停 → 用 `Bash(run_in_background)` 跑 `bash scripts/start.sh --no-build --foreground`）。
+- **本地后端改完一定要重启进程**：`restart.sh --no-build` 不会自动重编；只 `tsc` 出新 dist 而没重启 → 仍跑旧代码（曾因此导致「改了归店逻辑本地不生效」）。
 - 诊断本地服务：`curl --noproxy '*'`（沙箱注入了 HTTP_PROXY，走代理会 502/upstream connect failed）。
+- **本地数据库直连**（sandbox 可达，HTTP/端口探测会假失败但 docker 可用）：`docker exec playlish-mysql mysql -uroot -proot123 -N -e "..." ds`；容器 `playlish-mysql`，库 `ds`，**表名 snake_case**（users/stores/products/collect_tasks/pricing_records/screening_runs...）。
+- **本机拿 token 做接口验证**：本地 `admin/admin123` **登录不通**（401，本地库密码不同）；改读 `backend/.env` 的 `JWT_SECRET`，用 `backend/node_modules/jsonwebtoken` 现签一个 `{sub:<userId>,username,role}` 的 token 直接调接口（过期时间任意）。
 - `npm run build`（nest）会因清 dist 触发 safe-delete 拦截 → 用 `npx tsc -p tsconfig.build.json`（只覆盖写）。
 - `next build` 前清 `.next` 会被 safe-delete 拦 → 用 `mv .next /tmp/ds-next-old-$(date +%s)` 移走替代 `rm -rf`；构建用 `env -u NODE_OPTIONS npx next build`（去掉注入的 fs shim，否则 mkdir EEXIST）。
 - 前/后端重建后都要**重启进程**（旧进程内存里是旧 manifest / 旧代码）。

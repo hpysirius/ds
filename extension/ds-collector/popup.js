@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 
 // 常用后端地址一键填入：本地开发 / 已部署的服务器（服务器走 nginx，接口都在 /api 下）
 const PRESET_LOCAL = 'http://localhost:3101';
-const PRESET_SERVER = 'http://114.132.99.141/api';
+const PRESET_SERVER = 'http://ozon.qinxianty.com/api';
 
 async function send(msg) {
   return new Promise((resolve) => {
@@ -30,6 +30,22 @@ async function refresh() {
   $('batch').disabled = !!st.running;
   $('stop').disabled = !st.running;
   $('batch').textContent = st.running ? `补详情中 ${done}/${total}` : '补详情(批量)';
+
+  // 采集归属：内容脚本从 ds 网页读到的当前登录身份，决定数据归到哪个店铺
+  const idn = r.identity || {};
+  if (idn.token) {
+    const who = idn.nickname || idn.username || '已登录';
+    const where = idn.storeName
+      ? idn.storeName
+      : idn.storeId == null
+        ? '全部店铺'
+        : `店铺#${idn.storeId}`;
+    $('identity').textContent = `${who} · ${where}`;
+    $('identity').style.color = '#16a34a';
+  } else {
+    $('identity').textContent = '未登录（归超管「全部」）· 请在浏览器打开 ds 系统页面';
+    $('identity').style.color = '#d97706';
+  }
 
   // 后端连通性 + 待补数量（统一走 background，popup 自己不再直接 fetch）
   const p = await send({ type: 'DS_PING' });
@@ -275,7 +291,7 @@ $('addFreight').onchange = () => {
 $('fillBtn').onclick = async () => {
   const url = $('target').value.trim();
   if (!url) {
-    alert('请先填核价页地址，例如 http://114.132.99.141/pricing?sku=5611145930');
+    alert('请先填核价页地址，例如 http://ozon.qinxianty.com/pricing?sku=5611145930');
     return;
   }
   const btn = $('fillBtn');
