@@ -79,6 +79,57 @@ export async function postSourcing<T = any>(
   }
 }
 
+/**
+ * 带登录态下载文件（导出 CSV 用）。
+ *
+ * 后端 JWT 只认 `Authorization: Bearer` 头，所以用 `<a href="...">` 或 `window.open(...)`
+ * 直接打开导出接口是**顶层导航，不会带这个头**，必然 401。
+ * 因此统一走 http（请求拦截器会自动补 token），拿到 blob 后在前端触发下载。
+ *
+ * @param path 接口路径（相对 baseURL）
+ * @param fallbackName 服务端没给 Content-Disposition 时使用的文件名
+ * @param params 可选的 query 参数
+ */
+export async function downloadFile(
+  path: string,
+  fallbackName = 'export.csv',
+  params?: Record<string, any>,
+): Promise<void> {
+  const res = await http.get<Blob>(path, { responseType: 'blob', params });
+  const blob = res.data;
+
+  // 后端报错时若仍返回 200，body 会是 JSON 而不是 CSV —— 转成文本取出 message 再抛出去，
+  // 否则用户会下载到一个名为 .csv 的报错 JSON 文件
+  if (blob && blob.type && !/csv|text|octet-stream|excel/i.test(blob.type)) {
+    let msg = '导出失败';
+    try {
+      msg = JSON.parse(await blob.text())?.message || msg;
+    } catch {
+      /* body 不是 JSON，用默认文案 */
+    }
+    throw new Error(msg);
+  }
+
+  const name = fileNameFromDisposition(res.headers?.['content-disposition']) || fallbackName;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // 立刻 revoke 在部分浏览器会中断下载，延后释放
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** 从 `attachment; filename="pricing.csv"` 里取出文件名 */
+function fileNameFromDisposition(header?: string): string | null {
+  if (!header) return null;
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 export interface RuleSet {
   salesMin: number;
   salesMax: number;

@@ -26,7 +26,7 @@ import {
   message,
 } from 'antd';
 import { DownloadOutlined, ImportOutlined, ReloadOutlined } from '@ant-design/icons';
-import { API_BASE, http } from '@/lib/api';
+import { downloadFile, http } from '@/lib/api';
 import { COUNTRIES, VENDORS, pct, money } from '../constants';
 import { useStore } from '@/lib/store-context';
 
@@ -38,6 +38,7 @@ export default function PricingRecords() {
   const [keyword, setKeyword] = useState('');
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [importPath, setImportPath] = useState('/Users/huanghui/Downloads/9月定价表.xlsx');
   const [importSheet, setImportSheet] = useState('定价表');
   const [importReplace, setImportReplace] = useState(false);
@@ -55,15 +56,30 @@ export default function PricingRecords() {
   const [editForm] = Form.useForm();
 
   // 导出 CSV 时带上当前筛选条件（与列表一致）
-  const exportHref = (() => {
+  const exportQuery = (() => {
     const params = new URLSearchParams();
     if (keyword) params.set('keyword', keyword);
     if (listedFilter !== 'all') params.set('listed', listedFilter === 'yes' ? 'true' : 'false');
     if (higherFilter !== 'all') params.set('higherThanRetail', higherFilter === 'yes' ? 'true' : 'false');
     if (storeParam.storeId != null) params.set('storeId', String(storeParam.storeId));
-    const qs = params.toString();
-    return `${API_BASE}/pricing/records/export${qs ? `?${qs}` : ''}`;
+    return params.toString();
   })();
+
+  /**
+   * 导出走带登录态的 blob 请求。
+   * 原来用 <Button href> 是顶层导航，不带 Authorization 头 → 后端 JWT 校验必然 401。
+   */
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      await downloadFile(`/pricing/records/export${exportQuery ? `?${exportQuery}` : ''}`, 'pricing.csv');
+      message.success('已导出 CSV');
+    } catch (e: any) {
+      message.error(e?.message || '导出失败');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   /** 从 Excel《定价表》导入（按「工作表!行号」幂等，可勾选替换重导） */
   const doImport = async () => {
@@ -636,7 +652,7 @@ export default function PricingRecords() {
             导入定价表
           </Button>
           <Button icon={<ReloadOutlined />} onClick={load} />
-          <Button type="primary" icon={<DownloadOutlined />} href={exportHref}>
+          <Button type="primary" icon={<DownloadOutlined />} loading={exporting} onClick={doExport}>
             导出 CSV
           </Button>
         </Space>

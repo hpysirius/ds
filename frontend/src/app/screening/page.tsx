@@ -23,7 +23,7 @@ import {
   message,
 } from 'antd';
 import { DownloadOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons';
-import { http, GRADE_TEXT, GRADE_COLOR, RuleSet } from '@/lib/api';
+import { http, downloadFile, GRADE_TEXT, GRADE_COLOR, RuleSet } from '@/lib/api';
 import { useStore } from '@/lib/store-context';
 
 const GRADE_OPTIONS = [
@@ -67,6 +67,7 @@ export default function ScreeningPage() {
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<any>(null);
   const [runs, setRuns] = useState<any[]>([]);
+  const [exporting, setExporting] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveForm] = Form.useForm();
 
@@ -91,6 +92,23 @@ export default function ScreeningPage() {
     setItems(data.list);
     setTotal(data.total);
     if (data.run) setRunId(data.run.id);
+  };
+
+  /**
+   * 导出走带登录态的 blob 请求。
+   * 原来用 window.open 打开导出接口是顶层导航，不带 Authorization 头 → 必然 401。
+   */
+  const doExport = async () => {
+    if (!runId) return;
+    setExporting(true);
+    try {
+      await downloadFile(`/screening/runs/${runId}/export`, `screening_${runId}.csv`, grade ? { grade } : undefined);
+      message.success('已导出 CSV');
+    } catch (e: any) {
+      message.error(e?.message || '导出失败');
+    } finally {
+      setExporting(false);
+    }
   };
 
   useEffect(() => {
@@ -253,12 +271,7 @@ export default function ScreeningPage() {
             extra={
               <Space>
                 <Select style={{ width: 130 }} value={grade} onChange={setGrade} options={GRADE_OPTIONS} />
-                <Button
-                  size="small"
-                  icon={<DownloadOutlined />}
-                  disabled={!runId}
-                  onClick={() => window.open(`${(http.defaults.baseURL as string)}/screening/runs/${runId}/export?grade=${grade}`, '_blank')}
-                >
+                <Button size="small" icon={<DownloadOutlined />} disabled={!runId} loading={exporting} onClick={doExport}>
                   导出 CSV
                 </Button>
               </Space>

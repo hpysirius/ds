@@ -60,6 +60,8 @@ async function bootstrap() {
       cb(new Error('Not allowed by CORS'));
     },
     credentials: true,
+    // 导出 CSV 时前端要读文件名；跨域场景（本地 dev 前后端不同端口）默认读不到该响应头
+    exposedHeaders: ['Content-Disposition'],
   });
 
   app.useGlobalFilters(new AllExceptionsFilter());

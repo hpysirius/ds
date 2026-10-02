@@ -38,7 +38,11 @@ ssh -o BatchMode=yes -o ConnectTimeout=8 "$SERVER" 'echo SSH_OK' \
 
 echo "==> [2/5] 本地打包源码并直传到服务器（排除依赖/构建产物/本机 env）"
 Excludes=(
-  --exclude=node_modules --exclude=.git --exclude=.next --exclude=dist
+  --exclude=node_modules --exclude=.git --exclude=dist
+  # 注意：必须写成 '.next*' 而不是 '.next' —— 后者只匹配名字恰为 .next 的目录，
+  # 匹配不到 .next-old-*（前端换构建产物时 mv 出来的旧目录，单个约 230MB，累积过 GB），
+  # 会导致每次部署白白多传 1GB 并占满服务器磁盘
+  --exclude='.next' --exclude='.next-*'
   --exclude=run --exclude='*.sql'
   --exclude='.env' --exclude='.env.local' --exclude='*/.env' --exclude='*/.env.local'
   --exclude='.workbuddy' --exclude='deploy.sh'
