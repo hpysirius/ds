@@ -26,7 +26,7 @@ import {
   message,
 } from 'antd';
 import { DownloadOutlined, ImportOutlined, ReloadOutlined } from '@ant-design/icons';
-import { downloadFile, http } from '@/lib/api';
+import { downloadFile, http, proxyImageUrl } from '@/lib/api';
 import { COUNTRIES, VENDORS, pct, money } from '../constants';
 import { useStore } from '@/lib/store-context';
 
@@ -36,6 +36,12 @@ export default function PricingRecords() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState('');
+  /**
+   * 真正生效的搜索词（输入框只是草稿，回车/点搜索才应用）。
+   * 原来直接把输入值接进请求：每敲一个字符发一次请求，
+   * 而且在第 2 页改关键词会拿旧页码查新条件，结果永远是空列表。
+   */
+  const [appliedKeyword, setAppliedKeyword] = useState('');
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -58,7 +64,7 @@ export default function PricingRecords() {
   // 导出 CSV 时带上当前筛选条件（与列表一致）
   const exportQuery = (() => {
     const params = new URLSearchParams();
-    if (keyword) params.set('keyword', keyword);
+    if (appliedKeyword) params.set('keyword', appliedKeyword);
     if (listedFilter !== 'all') params.set('listed', listedFilter === 'yes' ? 'true' : 'false');
     if (higherFilter !== 'all') params.set('higherThanRetail', higherFilter === 'yes' ? 'true' : 'false');
     if (storeParam.storeId != null) params.set('storeId', String(storeParam.storeId));
@@ -109,7 +115,7 @@ export default function PricingRecords() {
       params: {
         page,
         pageSize: 20,
-        keyword: keyword || undefined,
+        keyword: appliedKeyword || undefined,
         listed: listedFilter === 'all' ? undefined : listedFilter === 'yes',
         higherThanRetail: higherFilter === 'all' ? undefined : higherFilter === 'yes',
         ...storeParam,
@@ -117,7 +123,7 @@ export default function PricingRecords() {
     });
     setList(data.list);
     setTotal(data.total);
-  }, [page, keyword, listedFilter, higherFilter, storeParam]);
+  }, [page, appliedKeyword, listedFilter, higherFilter, storeParam]);
 
   useEffect(() => {
     load().catch((e) => message.error(e.message));
@@ -226,7 +232,7 @@ export default function PricingRecords() {
       width: 180,
       render: (v: any, r: any) => (
         <Space size={6}>
-          {r.imageUrl ? <img src={r.imageUrl} alt="" style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 3 }} /> : null}
+          {r.imageUrl ? <img src={proxyImageUrl(r.imageUrl)} alt="" style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 3 }} /> : null}
           <div>
             <div>
               {v ? (
@@ -647,7 +653,25 @@ export default function PricingRecords() {
               { value: 'no', label: '高于跟卖价·否' },
             ]}
           />
-          <Input.Search placeholder="产品/渠道" allowClear value={keyword} onChange={(e) => setKeyword(e.target.value)} onSearch={() => setPage(1)} style={{ width: 200 }} />
+          <Input.Search
+            placeholder="产品/渠道"
+            allowClear
+            value={keyword}
+            onChange={(e) => {
+              const v = e.target.value;
+              setKeyword(v);
+              // 点 × 清空不会触发 onSearch，这里立即生效，否则列表还按旧关键词过滤
+              if (!v) {
+                setAppliedKeyword('');
+                setPage(1);
+              }
+            }}
+            onSearch={(v) => {
+              setAppliedKeyword(v);
+              setPage(1); // 换搜索词必须回第 1 页
+            }}
+            style={{ width: 200 }}
+          />
           <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
             导入定价表
           </Button>
@@ -690,7 +714,7 @@ export default function PricingRecords() {
         title={
           <Space size={8}>
             <span>中实跨境ERP 插件数据</span>
-            {cardRec?.imageUrl ? <img src={cardRec.imageUrl} alt="" style={{ width: 24, height: 24, borderRadius: 3, objectFit: 'cover' }} /> : null}
+            {cardRec?.imageUrl ? <img src={proxyImageUrl(cardRec.imageUrl)} alt="" style={{ width: 24, height: 24, borderRadius: 3, objectFit: 'cover' }} /> : null}
             <span style={{ fontSize: 13, color: '#666', fontWeight: 400 }}>{cardRec?.name || cardRec?.sku || ''}</span>
           </Space>
         }

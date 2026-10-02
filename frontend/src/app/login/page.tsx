@@ -44,12 +44,11 @@ export default function LoginPage() {
           <div style={{ fontSize: 20, fontWeight: 600 }}>电商选品分析系统</div>
           <Typography.Text type="secondary">请登录后继续使用</Typography.Text>
         </div>
-        <Form
-          form={form}
-          layout="vertical"
-          initialValues={{ username: 'admin', password: 'admin123' }}
-          onFinish={onFinish}
-        >
+        {/*
+          不要预填默认账号密码：系统部署在公网时，任何人打开登录页点一下就进后台了。
+          （原来这里写死了 admin / admin123）
+        */}
+        <Form form={form} layout="vertical" onFinish={onFinish}>
           <Form.Item name="username" label="登录名" rules={[{ required: true, message: '请输入登录名' }]}>
             <Input prefix={<UserOutlined />} placeholder="请输入登录名" size="large" />
           </Form.Item>

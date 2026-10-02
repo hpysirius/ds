@@ -24,14 +24,14 @@ export class UsersController {
 
   @Post()
   @ApiOperation({ summary: '创建用户' })
-  create(@Body() dto: CreateUserDto) {
-    return this.usersService.create(dto);
+  create(@Body() dto: CreateUserDto, @CurrentUser() user: any) {
+    return this.usersService.create(dto, user);
   }
 
   @Get()
-  @ApiOperation({ summary: '用户列表' })
-  findAll() {
-    return this.usersService.findAll();
+  @ApiOperation({ summary: '用户列表（超管看全部，其余只看本店）' })
+  findAll(@CurrentUser() user: any) {
+    return this.usersService.findAll(user);
   }
 
   @Patch(':id')
@@ -42,8 +42,12 @@ export class UsersController {
 
   @Patch(':id/password')
   @ApiOperation({ summary: '重置密码' })
-  resetPassword(@Param('id', ParseIntPipe) id: number, @Body() dto: ResetPasswordDto) {
-    return this.usersService.resetPassword(id, dto.password);
+  resetPassword(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ResetPasswordDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.usersService.resetPassword(id, dto.password, user);
   }
 
   @Delete(':id')

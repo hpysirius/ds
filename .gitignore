@@ -1,10 +1,17 @@
 node_modules/
 dist/
 .next/
+.next-*
 out/
 .env
 *.log
 uploads/
 .DS_Store
+*.tsbuildinfo
+
+# 数据库备份含用户密码哈希与经营数据，禁止入仓
+/ds_backup_*.sql
+backup*/
+*.dump
 
 run/

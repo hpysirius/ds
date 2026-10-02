@@ -5,7 +5,7 @@ import { BrowserService } from '../browser/browser.service';
 import { CdpClient, sleep } from './lib/cdp.client';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { QueryTaskDto } from './dto/query-task.dto';
-import { storeWhereClause } from '../../common/constants/permissions';
+import { clampPage, clampPageSize, inStoreScope, storeWhereClause } from '../../common/constants/permissions';
 
 /** 从插件注入的属性里读商品数据的 JS 片段 */
 const GRAB_JS = "JSON.stringify([].slice.call(document.querySelectorAll('[data-s2-card-data-json]')).map(function(e){try{var d=JSON.parse(e.getAttribute('data-s2-card-data-json'));var p=e,url='',name='';for(var i=0;i<10&&p;i++){var as=p.querySelectorAll?p.querySelectorAll('a[href*=\"/product/\"]'):[];var best=null;for(var k=0;k<as.length;k++){var tx=((as[k].getAttribute('aria-label')||as[k].innerText||'')+'').trim();if(!best||tx.length>best.length)best=tx;if(!url)url=as[k].href||''}if(best)name=best;if(url)break;p=p.parentElement}var q=e,img=null;for(var j=0;j<10&&q;j++){img=q.querySelector?q.querySelector('img[alt]'):null;if(img)break;q=q.parentElement}var alt=img?(img.getAttribute('alt')||'').trim():'';if(alt.length>12&&alt.length>(name||'').length)name=alt;d.__title=name||'';d.__url=url||'';try{if(!d.imageUrl&&img){var cand=img.getAttribute('srcset')||img.getAttribute('data-src')||img.getAttribute('src')||'';var first=cand?cand.split(',')[0].trim().split(' ')[0]:'';if(first&&/^https?:\\/\\//.test(first)===false&&first.indexOf('//')===0)first='https:'+first;if(first&&/^https?:\\/\\//i.test(first)&&!/chrome-extension:|data:|blob:/i.test(first)){d.__image=first}}}catch(e2){}return d}catch(err){return null}}).filter(Boolean))";
@@ -16,10 +16,15 @@ const num = (v: any): number | null => {
   return Number.isNaN(n) ? null : n;
 };
 
-const str = (v: any): string | null => {
+/**
+ * 字符串裁剪。第二个参数是**目标列的 VarChar 长度**（见 prisma/schema.prisma）。
+ * 原来统一截 480，但 brand 只有 100、categoryPath 300、sellerCountry 50、salesSchema 20，
+ * 上游字段一长就触发 MySQL 严格模式的 "Data too long"，整个采集任务在入库那一步失败。
+ */
+const str = (v: any, max = 480): string | null => {
   if (v === null || v === undefined) return null;
   const s = String(v).trim();
-  return s === '' ? null : s.slice(0, 480);
+  return s === '' ? null : s.slice(0, max);
 };
 
 @Injectable()
@@ -60,8 +65,8 @@ export class CollectService implements OnModuleInit {
       this.prisma.collectTask.findMany({
         where,
         orderBy: { id: 'desc' },
-        skip: ((query.page ?? 1) - 1) * (query.pageSize ?? 20),
-        take: query.pageSize ?? 20,
+        skip: (clampPage(query.page) - 1) * clampPageSize(query.pageSize),
+        take: clampPageSize(query.pageSize),
       }),
       this.prisma.collectTask.count({ where }),
     ]);
@@ -69,9 +74,7 @@ export class CollectService implements OnModuleInit {
   }
 
   private inScope(user: any, storeId: number | null): boolean {
-    if (!user) return true;
-    if (user.role === 'super_admin') return true;
-    return (user.storeId ?? -1) === (storeId ?? -1);
+    return inStoreScope(user, storeId);
   }
 
   async findOne(id: number, user?: any) {
@@ -381,31 +384,32 @@ export class CollectService implements OnModuleInit {
   private async persist(taskId: number, items: any[], storeId?: number | null) {
     let count = 0;
     for (const it of items) {
-      const sku = String(it.sku);
+      // sku 是唯一键且 VarChar(40)，超长会直接写库失败
+      const sku = String(it.sku).slice(0, 40);
       const incomingImage = this.isRealImage(it.imageUrl)
-        ? str(it.imageUrl)
+        ? str(it.imageUrl, 1000)
         : this.isRealImage(it.__image)
-          ? str(it.__image)
+          ? str(it.__image, 1000)
           : this.isRealImage(it.images)
-            ? str(it.images)
+            ? str(it.images, 1000)
             : null;
 
       const data: any = {
-        title: str(it.__title || it.title),
-        brand: str(it.brand),
-        categoryPath: str(it.category),
-        category3Name: str(it.category3Name || it.categoryDisplayName),
+        title: str(it.__title || it.title, 500),
+        brand: str(it.brand, 100),
+        categoryPath: str(it.category, 300),
+        category3Name: str(it.category3Name || it.categoryDisplayName, 200),
         price: num(it.currentPrice ?? it.cardPrice),
-        sellerId: str(it.sellerId),
-        sellerName: str(it.sellerName),
-        sellerCountry: str(it.sellerCountryName),
+        sellerId: str(it.sellerId, 40),
+        sellerName: str(it.sellerName, 200),
+        sellerCountry: str(it.sellerCountryName, 50),
         isChinaSeller: Boolean(it.isChinaSeller),
         // 图：只认真正的商品图；抓不到就留空，靠 update 分支保证不覆盖旧值
         imageUrl: incomingImage,
-        productUrl: str(it.__url || it.productUrl) || `https://www.ozon.ru/product/${sku}`,
+        productUrl: str(it.__url || it.productUrl, 1000) || `https://www.ozon.ru/product/${sku}`,
         rating: num(it.rating),
         reviewsCount: num(it.reviewsCount) ?? 0,
-        salesSchema: str(it.salesSchema),
+        salesSchema: str(it.salesSchema, 20),
         sizeLengthMm: num(it.sizeLengthMm),
         sizeWidthMm: num(it.sizeWidthMm),
         sizeHeightMm: num(it.sizeHeightMm),

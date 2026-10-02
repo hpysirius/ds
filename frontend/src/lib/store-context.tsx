@@ -33,7 +33,7 @@ interface StoreContextValue {
   reloadStores: () => void;
 }
 
-const STORAGE_KEY = 'ds_store_id';
+export const STORAGE_KEY = 'ds_store_id';
 
 const StoreContext = createContext<StoreContextValue>({
   stores: [],
@@ -87,6 +87,18 @@ export function StoreProvider({ user, children }: { user: any; children: ReactNo
       if (Number.isFinite(n)) setCurrentStoreIdState(n);
     }
   }, [isSuper]);
+
+  /*
+   * 店铺列表变化后，若当前选中的店铺已经不存在（例如被删除），回到「全部」。
+   * 否则 storeParam 会一直带着一个失效的 storeId，所有数据页都返回空列表。
+   */
+  useEffect(() => {
+    if (!isSuper || !stores.length) return;
+    if (currentStoreId != null && !stores.some((s) => s.id === currentStoreId)) {
+      setCurrentStoreId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSuper, stores, currentStoreId]);
 
   const setCurrentStoreId = (id: number | null) => {
     setCurrentStoreIdState(id);

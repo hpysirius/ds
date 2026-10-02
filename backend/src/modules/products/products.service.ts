@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueryProductDto } from './dto/query-product.dto';
-import { storeWhereClause } from '../../common/constants/permissions';
+import { clampPage, clampPageSize, inStoreScope, storeWhereClause } from '../../common/constants/permissions';
 
 const SORTABLE = ['lastSeenAt', 'soldCount', 'convToCartPdp', 'createDays', 'cancelRate', 'reviewsCount', 'price'];
 
@@ -38,16 +38,14 @@ export class ProductsService {
 
   /** 单条记录是否在该账号可见范围内（用于删除/详情的越权保护） */
   private inScope(user: any, storeId: number | null): boolean {
-    if (!user) return true;
-    if (user.role === 'super_admin') return true; // 超管看全部
-    return (user.storeId ?? -1) === (storeId ?? -1);
+    return inStoreScope(user, storeId);
   }
 
   async findAll(q: QueryProductDto, user?: any) {
     const where = { ...this.buildWhere(q), ...this.scope(user, (q as any).storeId) };
 
-    const page = q.page ?? 1;
-    const pageSize = Math.min(q.pageSize ?? 20, 200);
+    const page = clampPage(q.page);
+    const pageSize = clampPageSize(q.pageSize);
     const sortBy = SORTABLE.includes(q.sortBy) ? q.sortBy : 'lastSeenAt';
 
     // 按规则标签筛选：tags 存在 raw Json 里（[{name,color,priority,rule}]）。

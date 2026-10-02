@@ -18,7 +18,7 @@ import {
   suggestSellPrice,
   vendorLabel,
 } from './pricing.calc';
-import { parsePricingSheet } from './excel-import';
+import { assertExcelPath, parsePricingSheet } from './excel-import';
 import {
   CalcDto,
   CreateRecordDto,
@@ -30,7 +30,7 @@ import {
   UpdateSettingDto,
   UpsertChannelDto,
 } from './dto/pricing.dto';
-import { currentStoreId, storeWhereClause } from '../../common/constants/permissions';
+import { currentStoreId, inStoreScope, storeWhereClause } from '../../common/constants/permissions';
 
 const num = (v: any): number => {
   if (v == null) return 0;
@@ -701,19 +701,37 @@ export class PricingService {
    * 幂等：按 excelRef（工作表!行号）判重，重复导入只跳过、不重复插入。
    * 表里已有的净利润/毛利润/利润率等**以表为准**（原表才是用户的口径），表里没有才算。
    */
-  async importPricingExcel(filePath: string, sheetName = '定价表', replace = false) {
+  async importPricingExcel(filePath: string, sheetName = '定价表', replace = false, user?: any) {
+    // 路径校验放最前面：这个接口会把路径交给 unzip 去读，不能让任意路径进来
+    assertExcelPath(filePath);
+
     const settings = await this.getSettings();
-    // 重导：先清掉之前从 Excel 导进来的记录（工作台手工存的记录不动）
-    const removed = replace ? (await this.prisma.pricingRecord.deleteMany({ where: { source: 'excel' } })).count : 0;
     const rate = num(settings.exchangeRate) || 0.0862;
     const rows = parsePricingSheet(filePath, sheetName);
-    let created = 0;
+
+    /*
+     * 重导只清「当前账号可见范围」内的 Excel 记录。
+     * 原来不加店铺条件，A 店重导会把全平台所有店铺的 Excel 记录一起删掉。
+     */
+    const scope = storeWhereClause(user);
+    const storeId = currentStoreId(user);
+
+    // 一次查出已存在的 excelRef，替代原来的逐行 findFirst（几千行时是 N+1，非常慢）
+    const existRefs = new Set(
+      (
+        await this.prisma.pricingRecord.findMany({
+          where: { excelRef: { not: null }, ...scope },
+          select: { excelRef: true },
+        })
+      ).map((r) => r.excelRef as string),
+    );
+
     let skipped = 0;
     const samples: any[] = [];
+    const prepared: any[] = [];
 
     for (const r of rows) {
-      const exists = await this.prisma.pricingRecord.findFirst({ where: { excelRef: r.excelRef } });
-      if (exists) {
+      if (existRefs.has(r.excelRef)) {
         skipped++;
         continue;
       }
@@ -762,6 +780,8 @@ export class PricingService {
         sizeText: r.sizeText ?? null,
         source: 'excel',
         excelRef: r.excelRef,
+        // 归属当前操作的店铺，否则导入的记录谁都看不到
+        storeId,
       };
 
       const data = this.recompute(base);
@@ -775,8 +795,7 @@ export class PricingService {
       ];
       for (const [k, v] of keep) if (v != null) data[k] = v;
 
-      const row = await this.prisma.pricingRecord.create({ data });
-      created++;
+      prepared.push(data);
       if (samples.length < 3) {
         samples.push({
           row: r.row,
@@ -789,12 +808,21 @@ export class PricingService {
       }
     }
 
+    // 删除与插入必须同生共死：否则中途报错会留下「旧的已删、新的只进一半」
+    const removed = await this.prisma.$transaction(async (tx) => {
+      const rm = replace ? (await tx.pricingRecord.deleteMany({ where: { source: 'excel', ...scope } })).count : 0;
+      for (let i = 0; i < prepared.length; i += 200) {
+        await tx.pricingRecord.createMany({ data: prepared.slice(i, i + 200) });
+      }
+      return rm;
+    });
+
     return {
       sheet: sheetName,
       file: filePath,
       removed,
       total: rows.length,
-      created,
+      created: prepared.length,
       skipped,
       samples,
     };
@@ -850,9 +878,7 @@ export class PricingService {
 
   /** 单条记录是否在该账号可见范围内（越权保护） */
   private inScope(user: any, storeId: number | null): boolean {
-    if (!user) return true;
-    if (user.role === 'super_admin') return true;
-    return (user.storeId ?? -1) === (storeId ?? -1);
+    return inStoreScope(user, storeId);
   }
 
   async updateRecord(id: number, dto: UpdateRecordDto, user?: any) {
@@ -954,7 +980,9 @@ export class PricingService {
     ];
     const esc = (v: any) => {
       const s = v == null ? '' : String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      // 以 = + - @ 开头的值会被 Excel 当成公式执行（CSV 注入），前面补一个单引号挡掉
+      const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+      return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
     };
     const lines = [head.join(',')];
     list.forEach((r: any, i: number) => {

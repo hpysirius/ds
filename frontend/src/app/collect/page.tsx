@@ -41,6 +41,12 @@ export default function CollectPage() {
   const [detail, setDetail] = useState<any>(null);
   const [form] = Form.useForm();
   const timer = useRef<any>(null);
+  /**
+   * 轮询是 4s 触发一次的闭包，直接读 page state 会一直拿到「创建定时器那一刻」的值 ——
+   * 用户翻到第 2 页后，轮询仍按 page=1 拉数据把列表覆盖掉，分页器却还显示第 2 页。
+   * 用 ref 保存最新页码给轮询读。
+   */
+  const pageRef = useRef(1);
 
   const loadBrowser = async () => {
     try {
@@ -50,9 +56,12 @@ export default function CollectPage() {
     }
   };
 
-  const loadTasks = async (p = page) => {
+  const loadTasks = async (p?: number) => {
+    const target = p ?? pageRef.current;
+    pageRef.current = target;
+    setPage(target); // 顺带同步分页器，调用方不用再单独 setPage
     try {
-      const { data } = await http.get('/collect/tasks', { params: { page: p, pageSize: 10, ...storeParam } });
+      const { data } = await http.get('/collect/tasks', { params: { page: target, pageSize: 10, ...storeParam } });
       setTasks(data.list);
       setTotal(data.total);
     } catch (e: any) {
@@ -232,7 +241,7 @@ export default function CollectPage() {
           rowKey="id"
           size="small"
           dataSource={tasks}
-          pagination={{ current: page, pageSize: 10, total, onChange: (p) => { setPage(p); loadTasks(p); } }}
+          pagination={{ current: page, pageSize: 10, total, onChange: (p) => loadTasks(p) }}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 60 },
             { title: '任务名称', dataIndex: 'name', ellipsis: true },

@@ -32,6 +32,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (status >= 500) {
       this.logger.error(`${request.method} ${request.url} -> ${status}`, exception instanceof Error ? exception.stack : '');
+      // 5xx 不要把原始 message 回给前端：Prisma / 数据库报错里常带表名、列名、连接地址等内部信息
+      message = '服务器内部错误，请稍后重试';
     }
 
     response.status(status).json({

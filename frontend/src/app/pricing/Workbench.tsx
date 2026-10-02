@@ -23,8 +23,8 @@ import {
   Tooltip,
   message,
 } from 'antd';
-import { CopyOutlined, LinkOutlined, SaveOutlined, SearchOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { API_BASE, http, postSourcing, probeLocalApi } from '@/lib/api';
+import { CopyOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons';
+import { API_BASE, http, postSourcing, probeLocalApi, proxyImageUrl } from '@/lib/api';
 import { useStore } from '@/lib/store-context';
 
 const COUNTRIES = [
@@ -57,7 +57,7 @@ function localMetrics(sellPriceCny: number, cost: number, fee: number, label: nu
 }
 
 /**
- * 定价工作台：选品 → 1688 以图搜款 → 抓货源（成本/重量）→ 算运费与定价 → 保存定价记录
+ * 定价工作台：选品 → 复制主图去 1688 手工搜同款 → 贴货源链接抓价格/包装 → 算运费与定价 → 保存定价记录
  */
 export default function WorkbenchTab({ settings, onSaved }: { settings: any; onSaved?: () => void }) {
   const { storeParam } = useStore();
@@ -69,29 +69,18 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   const [pickOpen, setPickOpen] = useState(false);
   const [product, setProduct] = useState<any>(null);
 
-  const [searching, setSearching] = useState(false);
-  const [results, setResults] = useState<any[]>([]);
-  const [resultOpen, setResultOpen] = useState(false);
   const [fetchingOffer, setFetchingOffer] = useState(false);
   const [offer, setOffer] = useState<any>(null);
   // 线上机房 IP 被 1688 风控时会自动改用「本机后端」抓取，这里用来给用户一个明确提示
   const [viaLocal, setViaLocal] = useState(false);
   const [localReady, setLocalReady] = useState<boolean | null>(null);
   const [skuId, setSkuId] = useState<string | null>(null);
-  const [tabs, setTabs] = useState<string[]>([]);
-  const [searchKw, setSearchKw] = useState('');
-  const [syncing, setSyncing] = useState(false);
   const [copying, setCopying] = useState(false);
-  const [cookie, setCookie] = useState<any>(null);
-  const [cookieOpen, setCookieOpen] = useState(false);
-  const [cookieText, setCookieText] = useState('');
 
   const [calc, setCalc] = useState<any>(null);
   const [calculating, setCalculating] = useState(false);
   const [channelId, setChannelId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
-  const [autoRunning, setAutoRunning] = useState(false);
-  const [autoLog, setAutoLog] = useState<string[]>([]);
   const [booted, setBooted] = useState(false);
 
   useEffect(() => {
@@ -117,19 +106,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     probeLocalApi().then((ok) => setLocalReady(ok));
   }, []);
 
-  const loadCookieStatus = async () => {
-    try {
-      const { data } = await http.get('/pricing/sourcing/cookie-status');
-      setCookie(data);
-    } catch (e) {
-      /* ignore */
-    }
-  };
-
-  useEffect(() => {
-    loadCookieStatus();
-  }, []);
-
   // ---------------- 选品 ----------------
   const searchProducts = async () => {
     setPicking(true);
@@ -149,13 +125,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     setProduct(p);
     setPickOpen(false);
     const dims = [p.lengthCm || 0, p.widthCm || 0, p.heightCm || 0].filter((n: number) => n > 0).sort((a, b) => b - a);
-    // 1688 搜索关键词：优先用中文末级类目，其次类目路径最后一段
-    const lastCat = String(p.categoryPath || '')
-      .split('/')
-      .pop()
-      ?.trim();
-    const kw = p.category3Name || lastCat || '';
-    setSearchKw(kw);
     form.setFieldsValue({
       sku: p.sku,
       name: (p.title || '').slice(0, 80),
@@ -174,70 +143,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     setChannelId(null);
     setOffer(null);
     setSkuId(null);
-  };
-
-  // ---------------- 1688 找货源（纯 HTTP 为主，秒级）----------------
-  /** 关键词搜同款：0.5 秒，一次 20 条 */
-  const searchByKeyword = async (kwArg?: string) => {
-    const keyword = (kwArg ?? searchKw ?? '').trim();
-    if (!keyword) {
-      message.warning('请填搜索关键词（一般用商品的中文类目名）');
-      return [];
-    }
-    setSearching(true);
-    try {
-      const { data, via } = await postSourcing<any>('/pricing/sourcing/search-keyword', { keyword });
-      if (via === 'local') setViaLocal(true);
-      (data?.warnings || []).forEach((w: string) => message.warning(w));
-      const items = data?.items || [];
-      if (items.length) {
-        setResults(items);
-        setResultOpen(true);
-      } else {
-        message.info('没搜到货源，换个关键词试试');
-      }
-      return items;
-    } catch (e: any) {
-      message.error(e.message);
-      return [];
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  /** 手动粘贴 1688 Cookie（从 DevTools 复制） */
-  const saveCookie = async () => {
-    const raw = cookieText.trim();
-    if (!raw) {
-      message.warning('请先粘贴 Cookie');
-      return;
-    }
-    setSyncing(true);
-    try {
-      const { data } = await http.post('/pricing/sourcing/cookie', { cookie: raw });
-      setCookie(data);
-      setCookieOpen(false);
-      setCookieText('');
-      message.success('Cookie 已保存，之后搜款/抓详情全程走 HTTP');
-    } catch (e: any) {
-      message.error(e.message);
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  /** 同步一次 1688 登录态（只读 cookie，不渲染页面） */
-  const syncCookie = async () => {
-    setSyncing(true);
-    try {
-      const { data } = await http.post('/pricing/sourcing/sync-cookie');
-      message.success(data?.msg || '已同步');
-      loadCookieStatus();
-    } catch (e: any) {
-      message.error(e.message);
-    } finally {
-      setSyncing(false);
-    }
   };
 
   // ---------------- 1688 找货源 ----------------
@@ -259,56 +164,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     }
     return imageUrl;
   };
-
-  /** 反复扫描浏览器里的 1688 标签页，取回货源卡片 */
-  const collectResults = async (rounds = 6): Promise<any[]> => {
-    for (let i = 0; i < rounds; i++) {
-      const { data } = await http.post('/pricing/sourcing/scan-tabs');
-      setTabs(data?.tabs || []);
-      const items = data?.items || [];
-      if (items.length) {
-        setResults(items);
-        setResultOpen(true);
-        return items;
-      }
-      await new Promise((r) => setTimeout(r, 4000));
-    }
-    return [];
-  };
-
-  const imageSearch = async () => {
-    const imageUrl = await ensureImage();
-    if (!imageUrl) {
-      message.warning('没有可用主图：请先从商品库选品，或手动打开商品页让系统抓图');
-      return;
-    }
-    setSearching(true);
-    try {
-      // 1) 打开 1688 图搜页并把主图塞进上传框
-      const { data: prep } = await http.post('/pricing/sourcing/prepare-search', { imageUrl });
-      (prep?.warnings || []).forEach((w: string) => message.warning(w));
-      // 2) 尽力自动点「搜索图片」（1688 是重 SPA，这一步可能点不动，不影响后面的手动流程）
-      const { data: trig } = await http.post('/pricing/sourcing/trigger-search');
-      // 3) 收结果
-      const items = await collectResults(6);
-      if (!items.length) {
-        message.info(
-          trig?.clicked
-            ? '已自动点过搜索，但结果还没出来：请到浏览器里等一下，再点「读取 1688 结果」。'
-            : '请到浏览器里点一下「搜索图片」，等结果出来后回这里点「读取 1688 结果」。',
-        );
-      }
-    } catch (e: any) {
-      message.error(e.message);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  /** 手动收结果：用户自己在浏览器里搜完款后点这个 */
-  /** 走同源代理显示图片（Ozon 图有防盗链，直链经常 403） */
-  const proxyImage = (u?: string | null) =>
-    u ? `${API_BASE}/pricing/sourcing/image-proxy?url=${encodeURIComponent(u)}` : '';
 
   /** 把 blob 统一转成 PNG（Chrome 剪贴板对 png 支持最稳） */
   const blobToPng = (blob: Blob) =>
@@ -338,8 +193,8 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     });
 
   /**
-   * 复制商品主图到剪贴板 —— 复制完去调试 Chrome 的 1688 图搜页 Ctrl+V 就能搜同款。
-   * 已经点过「以图搜款」的话，图搜页已经开着并支持粘贴，两边配合用最顺。
+   * 复制商品主图到剪贴板 —— 复制完去浏览器里的 1688 图搜页 Ctrl+V 就能搜同款。
+   * 这是工作台里唯一与「搜款」相关的动作：不做自动抓取，避免触发 1688 风控。
    */
   const copyProductImage = async () => {
     setCopying(true);
@@ -357,7 +212,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
         typeof (window as any).ClipboardItem !== 'undefined';
       if (!canWrite) throw new Error('当前浏览器不支持直接写剪贴板');
 
-      const res = await fetch(proxyImage(imageUrl));
+      const res = await fetch(proxyImageUrl(imageUrl));
       if (!res.ok) throw new Error('取图失败');
       const png = await blobToPng(await res.blob());
       await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': png })]);
@@ -365,30 +220,11 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     } catch (e: any) {
       // 降级：新标签打开图片，右键复制也一样
       const u = product?.imageUrl || form.getFieldValue('imageUrl');
-      if (u) window.open(proxyImage(u), '_blank');
+      if (u) window.open(proxyImageUrl(u), '_blank');
       message.warning(`${e.message}；已在新标签打开图片，右键「复制图片」即可`);
     } finally {
       setCopying(false);
     }
-  };
-
-  const scanTabs = async () => {
-    setSearching(true);
-    try {
-      const items = await collectResults(3);
-      if (!items.length) message.info('还没读到货源：请确认浏览器里 1688 搜索结果页是打开的，再点一次。');
-    } catch (e: any) {
-      message.error(e.message);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const chooseOffer = async (item: any) => {
-    setResultOpen(false);
-    form.setFieldsValue({ supplyUrl: item.offerUrl, offer1688Title: item.title });
-    setSkuId(null);
-    await fetchOffer(item.offerUrl);
   };
 
   /**
@@ -592,98 +428,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   );
 
   /**
-   * 一键自动核价（从商品库带 SKU 过来时用）：
-   * 关键词搜 1688 同款 → 取一款 → 抓价格/包装信息 → 算定价
-   * 全程纯 HTTP，秒级完成（不再依赖浏览器）
-   */
-  const autoRun = async (p: any) => {
-    setAutoRunning(true);
-    setAutoLog([]);
-    const log = (m: string) => setAutoLog((prev) => [...prev, m]);
-    try {
-      // 1. 关键词（商品库的中文末级类目）
-      const lastCat = String(p.categoryPath || '')
-        .split('/')
-        .pop()
-        ?.trim();
-      const kw = p.category3Name || lastCat || '';
-      if (!kw) {
-        log('❌ 这个商品没有中文类目名，请手动填关键词搜款');
-        return;
-      }
-      setSearchKw(kw);
-      log(`用关键词「${kw}」搜 1688 同款（纯 HTTP）…`);
-      const { data: s, via: viaS } = await postSourcing<any>('/pricing/sourcing/search-keyword', { keyword: kw });
-      if (viaS === 'local') setViaLocal(true);
-      (s?.warnings || []).forEach((w: string) => log('⚠ ' + w));
-      const items = s?.items || [];
-      if (!items.length) {
-        log('❌ 没搜到结果，检查关键词或先同步 1688 登录态');
-        return;
-      }
-      setResults(items);
-      setResultOpen(true);
-      // 优先挑标题里带完整关键词的（更可能是同款），否则用第一条
-      const first = items.find((x: any) => (x.title || '').includes(kw)) || items[0];
-      log(`✔ 搜到 ${items.length} 款，选：${(first.title || first.offerId).slice(0, 26)}（¥${first.price ?? '-'}）`);
-      form.setFieldsValue({ supplyUrl: first.offerUrl, offer1688Title: first.title });
-      if (first.price != null) form.setFieldsValue({ purchaseCost: first.price });
-
-      // 3. 抓货品（价格 + 包装信息 + 规格 + 另需运费）
-      log('打开 1688 货品页抓取价格与包装信息…');
-      const { data: of, via: viaO } = await postSourcing<any>('/pricing/sourcing/offer', { url: first.offerUrl });
-      if (viaO === 'local') {
-        setViaLocal(true);
-        log('ℹ 线上机房 IP 被 1688 风控，已自动改用本机出口抓取');
-      }
-      setOffer(of);
-      setSkuId(null);
-      if (of?.title) form.setFieldsValue({ offer1688Title: of.title });
-      const skus: any[] = of?.skus || [];
-      if (skus.length) {
-        const cheapest = [...skus.filter((s: any) => s.price != null)].sort((a: any, b: any) => a.price - b.price)[0] || skus[0];
-        applyOfferSku(cheapest);
-        const freightTxt = of?.freightYuan != null ? ` + 运费 ¥${of.freightYuan}` : '';
-        log(
-          `✔ 抓到 ${skus.length} 个规格，默认选最低价「${cheapest.name}」¥${cheapest.price ?? '-'}${freightTxt}` +
-            (cheapest.lengthCm ? ` · ${cheapest.lengthCm}×${cheapest.widthCm}×${cheapest.heightCm}cm · ${cheapest.weightG ?? '-'}g` : '') +
-            '（可在「1688 规格」下拉里换成实际要的规格）',
-        );
-      } else {
-        if (of?.price != null) {
-          const freight = Number(of?.freightYuan || 0);
-          form.setFieldsValue({ purchaseCost: Number((of.price + freight).toFixed(2)) });
-        }
-        if (of?.weightG) {
-          form.setFieldsValue({ weightKg: Number((of.weightG / 1000).toFixed(4)), weightSource: '1688包装信息' });
-          const dimTxt =
-            of?.lengthCm && of?.widthCm && of?.heightCm
-              ? `${of.lengthCm}×${of.widthCm}×${of.heightCm}cm · `
-              : '尺寸缺失 · ';
-          log(`✔ 包装信息：${dimTxt}${of.weightG}g`);
-        } else {
-          log('⚠ 没抓到包装信息，先用商品库的重量尺寸');
-        }
-        if (of?.lengthCm && of?.widthCm && of?.heightCm) {
-          form.setFieldsValue({ lengthCm: of.lengthCm, widthCm: of.widthCm, heightCm: of.heightCm });
-        }
-      }
-      (of?.warnings || []).forEach((w: string) => log('⚠ ' + w));
-
-      // 4. 算定价
-      log('按渠道算运费并生成定价…');
-      await runPrice(null);
-      log('✔ 完成，确认后点「保存到定价记录」');
-      message.success('自动核价完成');
-    } catch (e: any) {
-      log('❌ ' + e.message);
-      message.error(e.message);
-    } finally {
-      setAutoRunning(false);
-    }
-  };
-
-  /**
    * 插件从 1688 页面带过来的数据（/pricing?...&dsfill=1&cost=&wt=&l=&w=&h=&supply=&stitle=）。
    * 必须是「最后」写入 —— 前面 pickProduct 会先用商品库的值填一遍表单，回填值要覆盖它。
    */
@@ -722,7 +466,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form]);
 
-  /** 从商品库跳过来时（/pricing?sku=xxx[&auto=1]）自动带出商品，带 auto=1 时自动跑一遍 */
+  /** 从商品库跳过来时（/pricing?sku=xxx）自动带出商品 */
   useEffect(() => {
     if (booted || !settings) return;
     const params = new URLSearchParams(window.location.search);
@@ -739,8 +483,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
             message.warning(`商品库里没有 SKU ${sku}`);
           } else {
             pickProduct(p);
-            // 插件已经把 1688 数据带来了，就别再自动跑一遍（那会重新抓一次 1688 覆盖掉）
-            if (params.get('auto') === '1' && !isFill) await autoRun(p);
           }
         }
         if (isFill) applyPluginFill(params);
@@ -857,59 +599,9 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
               <Button icon={<SearchOutlined />} loading={picking} onClick={searchProducts}>
                 搜索商品库
               </Button>
-              <Button
-                type="primary"
-                ghost
-                icon={<ThunderboltOutlined />}
-                loading={autoRunning}
-                disabled={!product}
-                onClick={() => product && autoRun(product)}
-                title="关键词搜 1688 同款 → 抓价格与包装信息 → 自动算定价（纯 HTTP，秒级）"
-              >
-                一键自动核价
-              </Button>
             </Space>
 
             <Space wrap>
-              <span style={{ fontSize: 12, color: '#666' }}>1688 搜款关键词：</span>
-              <Input
-                placeholder="用商品的中文类目名，如「儿童泡泡机」"
-                value={searchKw}
-                onChange={(e) => setSearchKw(e.target.value)}
-                style={{ width: 260 }}
-                onPressEnter={() => searchByKeyword()}
-              />
-              <Button icon={<SearchOutlined />} loading={searching} onClick={() => searchByKeyword()}>
-                1688 搜同款
-              </Button>
-              {cookie?.hasCookie ? (
-                <Tag color="green">
-                  1688 登录态已就绪（{cookie.cookieCount} 条）
-                  {cookie.syncedAt ? ` · ${new Date(cookie.syncedAt).toLocaleString('zh-CN')}` : ''}
-                </Tag>
-              ) : (
-                <Tag color="orange">1688 登录态未同步</Tag>
-              )}
-              <Button size="small" loading={syncing} onClick={syncCookie}>
-                同步 1688 登录态
-              </Button>
-              <Button size="small" onClick={() => setCookieOpen(true)}>
-                粘贴 Cookie
-              </Button>
-              <Tooltip title="以图搜款更准：系统在调试 Chrome 里打开 1688 图搜页并自动把商品主图放进上传框、自动点「搜索图片」，然后回这里点「读取浏览器里的结果」把货源接回来（价格/包装仍是 HTTP 秒抓）">
-                <Button
-                  size="small"
-                  icon={<ThunderboltOutlined />}
-                  loading={searching}
-                  onClick={imageSearch}
-                  disabled={!product && !form.getFieldValue('imageUrl')}
-                >
-                  以图搜款（更准）
-                </Button>
-              </Tooltip>
-              <Button size="small" loading={searching} onClick={scanTabs}>
-                读取浏览器里的结果
-              </Button>
               <Tooltip title="把商品主图复制到剪贴板，然后到调试 Chrome 的 1688 图搜页按 Ctrl+V 粘贴">
                 <Button size="small" icon={<CopyOutlined />} loading={copying} onClick={copyProductImage}>
                   复制图片
@@ -922,7 +614,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
                   {product.imageUrl ? (
                     <Tooltip title="点击复制图片">
                       <img
-                        src={proxyImage(product.imageUrl)}
+                        src={proxyImageUrl(product.imageUrl)}
                         alt=""
                         onClick={copyProductImage}
                         style={{ width: 88, height: 88, objectFit: 'cover', borderRadius: 4, cursor: 'copy' }}
@@ -949,38 +641,11 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
               <Alert
                 type="info"
                 showIcon
-                message="从商品库选品后，可一键用商品主图去 1688 以图搜款（需在「浏览器接管」里启动 Chrome 并登录 1688）；没图时会自动先抓 Ozon 主图。"
+                message="从商品库选品后，点「复制图片」把商品主图复制到剪贴板，再到浏览器里的 1688 图搜页按 Ctrl+V 粘贴即可搜同款；没图时会自动先抓 Ozon 主图。"
               />
             )}
           </Space>
         </Card>
-
-        {autoLog.length ? (
-          <Card size="small" title="自动核价进度" style={{ marginTop: 12 }}>
-            <Space direction="vertical" size={2} style={{ width: '100%' }}>
-              {autoLog.map((l, i) => (
-                <div key={i} style={{ fontSize: 12, color: l.startsWith('❌') ? '#cf1322' : l.startsWith('⚠') ? '#d46b08' : '#666' }}>
-                  {l}
-                </div>
-              ))}
-            </Space>
-          </Card>
-        ) : null}
-
-        {tabs.length ? (
-          <Card size="small" title="浏览器里的 1688 页面" style={{ marginTop: 12 }}>
-            <Space direction="vertical" size={2} style={{ width: '100%' }}>
-              {[...new Set(tabs)].slice(0, 6).map((t, i) => (
-                <a key={i} href={t} target="_blank" rel="noreferrer" style={{ fontSize: 12, wordBreak: 'break-all' }}>
-                  {t.slice(0, 130)}
-                </a>
-              ))}
-              <div style={{ fontSize: 12, color: '#999' }}>
-                在浏览器里挑好货源后，把 detail.1688.com/offer/… 链接粘到下面「1688 货源链接」，点右侧「抓取 1688 价格/包装信息」即可。
-              </div>
-            </Space>
-          </Card>
-        ) : null}
 
         <Card size="small" title="② 货源与包裹" style={{ marginTop: 12 }}>
           <Form form={form} layout="vertical" size="small">
@@ -1320,7 +985,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
               title: '图',
               dataIndex: 'imageUrl',
               width: 60,
-              render: (v: string) => (v ? <img src={v} alt="" style={{ width: 44, height: 44, objectFit: 'cover' }} /> : null),
+              render: (v: string) => (v ? <img src={proxyImageUrl(v)} alt="" style={{ width: 44, height: 44, objectFit: 'cover' }} /> : null),
             },
             { title: 'SKU', dataIndex: 'sku', width: 110 },
             { title: '标题', dataIndex: 'title', ellipsis: true },
@@ -1341,76 +1006,6 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
             },
           ]}
         />
-      </Modal>
-
-      {/* 手动粘贴 1688 Cookie */}
-      <Modal
-        open={cookieOpen}
-        onCancel={() => setCookieOpen(false)}
-        onOk={saveCookie}
-        okText="保存 Cookie"
-        confirmLoading={syncing}
-        title="粘贴 1688 Cookie（一次即可，之后全程走 HTTP）"
-        width={720}
-      >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="怎么复制："
-          description={
-            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-              <li>在 Chrome 里打开并登录 <b>www.1688.com</b>（确保是已登录状态）</li>
-              <li>按 <b>F12</b> 打开开发者工具，切到 <b>Network（网络）</b> 面板</li>
-              <li>地址栏回车刷新页面，在请求列表里随便点一条 <b>www.1688.com</b> 的请求（一般是最上面那条 document）</li>
-              <li>右侧找到 <b>Request Headers（请求标头）</b> → <b>Cookie</b>，右键 → Copy value（复制值）</li>
-              <li>把它整段粘到下面，点保存</li>
-            </ol>
-          }
-        />
-        <Input.TextArea
-          rows={8}
-          value={cookieText}
-          onChange={(e) => setCookieText(e.target.value)}
-          placeholder="把整段 Cookie 粘到这里，例如：cookie2=xxxx; _m_h5_tk=xxxx_1234; unb=123456; ..."
-        />
-        <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
-          也支持点上面的「同步 1688 登录态」：从「浏览器接管」的调试 Chrome 里直接读一次（只读 cookie，不渲染页面，0.15 秒）。
-          Cookie 失效后搜款会提示，重新做一次即可（一般能管几周到几个月）。
-        </div>
-      </Modal>
-
-      {/* 以图搜款结果 */}
-      <Modal open={resultOpen} onCancel={() => setResultOpen(false)} footer={null} title="1688 以图搜款结果" width={900}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-          {results.map((it: any) => (
-            <Card
-              key={it.offerId}
-              hoverable
-              size="small"
-              style={{ width: 200 }}
-              cover={
-                it.imageUrl ? <img alt="" src={it.imageUrl.startsWith('//') ? `https:${it.imageUrl}` : it.imageUrl} style={{ height: 150, objectFit: 'cover' }} /> : null
-              }
-              onClick={() => chooseOffer(it)}
-              actions={[
-                <Button key="pick" type="link" size="small" onClick={() => chooseOffer(it)}>
-                  选这个
-                </Button>,
-              ]}
-            >
-              <div style={{ fontSize: 12, height: 36, overflow: 'hidden' }}>{it.title}</div>
-              <div style={{ color: '#cf1322', fontWeight: 600 }}>{it.price != null ? `¥${it.price}` : '价格未抓到'}</div>
-              <div style={{ fontSize: 11, color: '#888' }}>
-                {it.salesText ? `成交 ${it.salesText}` : ''} {it.repurchase ? `· 复购 ${it.repurchase}` : ''}
-                {it.shop ? ` · ${it.shop}` : ''}
-              </div>
-              <div style={{ fontSize: 11, color: '#999' }}>
-                <LinkOutlined /> {it.offerId}
-              </div>
-            </Card>
-          ))}
-        </div>
       </Modal>
     </Row>
   );

@@ -48,9 +48,32 @@ Excludes=(
   --exclude='.workbuddy' --exclude='deploy.sh'
 )
 # 纯 tar 流 + ssh，二者不在同一条 heredoc 里，避免二进制流被当成脚本
+#
+# 不能 `rm -rf $REMOTE_DIR` 再解包：
+#   1) backend/uploads（用户上传的文件）也在里面，每次部署都会被删掉；
+#   2) 本地 tar 一旦失败（断网/文件读不了），远端已经被清空，站点直接不可用。
+# 改为：解到 .incoming → 接管持久目录 → 原子切换 → 旧版本保留为 .prev 便于回滚。
 tar -czf - "${Excludes[@]}" . 2>/dev/null \
   | ssh -o BatchMode=yes -o ConnectTimeout=10 "$SERVER" \
-      "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR && tar -xzf - -C $REMOTE_DIR && echo TRANSFER_DONE && echo \"files: \$(find $REMOTE_DIR -type f | wc -l)\""
+      "mkdir -p ${REMOTE_DIR}.incoming && rm -rf ${REMOTE_DIR}.incoming/* && tar -xzf - -C ${REMOTE_DIR}.incoming && echo TRANSFER_DONE && echo \"files: \$(find ${REMOTE_DIR}.incoming -type f | wc -l)\""
+
+echo "==> [2.5/5] 接管持久数据并原子切换（旧版本保留为 ${REMOTE_DIR}.prev）"
+ssh -o BatchMode=yes -o ConnectTimeout=10 "$SERVER" "bash -s" <<SWITCH
+set -e
+# 需要跨版本保留的目录（相对部署根目录）
+for d in backend/uploads; do
+  if [ -d "${REMOTE_DIR}/\$d" ]; then
+    mkdir -p "${REMOTE_DIR}.incoming/\$d"
+    cp -a "${REMOTE_DIR}/\$d/." "${REMOTE_DIR}.incoming/\$d/"
+  fi
+done
+if [ -d "${REMOTE_DIR}" ]; then
+  rm -rf "${REMOTE_DIR}.prev"
+  mv "${REMOTE_DIR}" "${REMOTE_DIR}.prev"
+fi
+mv "${REMOTE_DIR}.incoming" "${REMOTE_DIR}"
+echo SWITCH_DONE
+SWITCH
 
 echo "==> [3/5] 在服务器生成 env / pm2 配置"
 ssh -o BatchMode=yes -o ConnectTimeout=10 "$SERVER" "bash -s" <<'EOF'

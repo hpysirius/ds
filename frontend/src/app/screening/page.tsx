@@ -91,6 +91,8 @@ export default function ScreeningPage() {
     const { data } = await http.get(`/screening/runs/${id}`, { params: { grade: g, page: p, pageSize: 20 } });
     setItems(data.list);
     setTotal(data.total);
+    // 同步页码：原来不 setPage，切档位/切批次后表格显示第 1 页、分页器却还停在第 3 页
+    setPage(p);
     if (data.run) setRunId(data.run.id);
   };
 

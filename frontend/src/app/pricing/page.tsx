@@ -52,6 +52,8 @@ function ChannelTab() {
 
   const openEdit = (row?: any) => {
     setEditing(row || null);
+    // 必须先清空：否则「编辑过 A 渠道再点新增」会把 A 的渠道名/运费/备注残留进新表单
+    form.resetFields();
     form.setFieldsValue(
       row || {
         country,

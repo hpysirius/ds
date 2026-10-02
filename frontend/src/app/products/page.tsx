@@ -2,17 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { Button, Card, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Table, Tag, Tooltip, message } from 'antd';
-import { CalculatorOutlined, DeleteOutlined, DownloadOutlined, PictureOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { CalculatorOutlined, DeleteOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
-import { API_BASE, http } from '@/lib/api';
+import { http, proxyImageUrl } from '@/lib/api';
 import { useStore } from '@/lib/store-context';
 
 /** 标题最多显示多少字（超出省略号，鼠标悬浮看全文） */
 const TITLE_MAX = 26;
-
-/** 图片走同源代理：Ozon 图片直链有防盗链，直接 img src 会 403 */
-const proxyImage = (u?: string | null) =>
-  u ? `${API_BASE}/pricing/sourcing/image-proxy?url=${encodeURIComponent(u)}` : '';
 
 export default function ProductsPage() {
   const router = useRouter();
@@ -25,10 +21,6 @@ export default function ProductsPage() {
   const [categories, setCategories] = useState<{ label: string; value: string }[]>([]);
   const [form] = Form.useForm();
 
-  const [filling, setFilling] = useState(false);
-  /** 单条补图时记录哪个 sku 在抓（按钮转 loading） */
-  const [fillingSku, setFillingSku] = useState<string | null>(null);
-
   /** 勾选要批量删除的行（存的是商品 id） */
   const [selected, setSelected] = useState<number[]>([]);
   const [deleting, setDeleting] = useState(false);
@@ -37,6 +29,9 @@ export default function ProductsPage() {
   const [rate, setRate] = useState(0.0862);
 
   /** 规则标签筛选项（从当前已加载列表里的 tags 汇总去重，供筛选下拉用） */
+  // 表头排序（后端支持 sortBy + order）。不记下来的话，翻页时排序会丢
+  const [sortBy, setSortBy] = useState<string | undefined>();
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | undefined>();
   const [tagOptions, setTagOptions] = useState<{ label: string; value: string }[]>([]);
 
   /** 删除失败时给出人话提示（未登录要单独说，否则只看到一句 Unauthorized） */
@@ -115,61 +110,23 @@ export default function ProductsPage() {
     });
   };
 
-  /** 补商品信息：打开 Ozon 详情页，补齐品牌/类目/月销/加购率/退货率/广告占比/上架天/发货/评论/主图等（限流分批） */
-  const fillInfo = async () => {
-    setFilling(true);
-    let enriched = 0;
-    let lastDetail: any[] = [];
-    try {
-      for (let i = 0; i < 8; i++) {
-        const { data } = await http.post('/pricing/products/fill-info', { limit: 3 });
-        lastDetail = data?.failedDetail || [];
-        enriched += (data?.enriched || []).length;
-        message.loading(`补商品信息中… 已补 ${enriched} 个，还缺 ${data?.remaining ?? '?'} 个`, 0.8);
-        await load(1);
-        const got = (data?.enriched || []).length;
-        if (data?.remaining === 0) break;
-        if (!got && i > 0) break; // 连续抓不到就别硬循环
-      }
-      const detail = (lastDetail || []).map((x: any) => `${x.sku}：${x.reason}`).join('；');
-      if (enriched) {
-        message.success(`补商品信息完成：已补充 ${enriched} 个商品${detail ? '｜失败：' + detail : ''}`, 6);
-      } else {
-        message.warning(`没有可补充的信息。${detail ? '原因：' + detail : '请确认调试 Chrome 能正常打开 Ozon 商品页（可能被反爬校验挡住）'}`, 8);
-      }
-      await load(1);
-    } catch (e: any) {
-      message.error(e.message);
-    } finally {
-      setFilling(false);
-    }
-  };
-
-  /** 单条补商品信息：调 product-info 接口，用调试浏览器打开商品页读取全部缺失字段（约 10-20 秒） */
-  const fillOneInfo = async (sku: string) => {
-    setFillingSku(sku);
-    const hide = message.loading(`正在为 ${sku} 补充商品信息…（约 10-20 秒，打开 Ozon 商品页读取品牌/类目/月销等）`, 0);
-    try {
-      const { data } = await http.post('/pricing/sourcing/product-info', { sku }, { timeout: 180000 });
-      if (data?.ok) {
-        message.success(`${sku} 已补充：${(data.fields || []).join('、') || '信息'}`, 3);
-        await load();
-      } else {
-        message.warning(`${sku} 未补充到信息（${data?.reason || '页面未提供'}）`, 5);
-      }
-    } catch (e: any) {
-      message.error(`${sku} 补充失败：${e.message}`, 5);
-    } finally {
-      hide();
-      setFillingSku(null);
-    }
-  };
-
-  const load = async (p = page, s = pageSize) => {
+  const load = async (
+    p = page,
+    s = pageSize,
+    sorting?: { sortBy?: string; sortOrder?: 'asc' | 'desc' },
+  ) => {
+    const sb = sorting ? sorting.sortBy : sortBy;
+    const so = sorting ? sorting.sortOrder : sortOrder;
+    setSortBy(sb);
+    setSortOrder(so);
     setLoading(true);
     try {
       const values = form.getFieldsValue();
       const params: any = { page: p, pageSize: s, ...values, ...storeParam };
+      if (sb) {
+        params.sortBy = sb;
+        params.order = so || 'desc';
+      }
       Object.keys(params).forEach((k) => {
         if (params[k] === undefined || params[k] === null || params[k] === '') delete params[k];
       });
@@ -333,9 +290,6 @@ export default function ProductsPage() {
         size="small"
         extra={
           <Space wrap>
-            <Button size="small" icon={<PictureOutlined />} loading={filling} onClick={fillInfo}>
-              补商品信息
-            </Button>
             <Button size="small" icon={<DownloadOutlined />} onClick={exportCsv} disabled={!list.length}>
               导出当前页
             </Button>
@@ -366,12 +320,20 @@ export default function ProductsPage() {
             onChange: (keys) => setSelected(keys as number[]),
           }}
           locale={{ emptyText: <Empty description="还没有商品，先去「数据采集」跑一轮" /> }}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            onChange: (p, s) => load(p, s),
+          pagination={{ current: page, pageSize, total, showSizeChanger: true }}
+          /*
+           * 分页和排序统一走 Table 的 onChange。
+           * 原来只在 pagination.onChange 里翻页，却给价格/月销列写了 sorter: true
+           * （sorter: true 表示「服务端排序」），没有任何地方处理它 ——
+           * 结果点表头只有箭头在变，数据顺序永远不动。
+           */
+          onChange={(pag: any, _filters: any, sorter: any) => {
+            const s = Array.isArray(sorter) ? sorter[0] : sorter;
+            const order = s?.order;
+            load(pag.current ?? 1, pag.pageSize ?? pageSize, {
+              sortBy: order ? String(s.field) : undefined,
+              sortOrder: order === 'ascend' ? 'asc' : order === 'descend' ? 'desc' : undefined,
+            });
           }}
           columns={[
             {
@@ -386,7 +348,7 @@ export default function ProductsPage() {
                     {r.imageUrl ? (
                       <a href={r.productUrl} target="_blank" rel="noreferrer">
                         <img
-                          src={proxyImage(r.imageUrl)}
+                          src={proxyImageUrl(r.imageUrl)}
                           alt=""
                           loading="lazy"
                           style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 4, background: '#f5f5f5' }}
@@ -492,23 +454,12 @@ export default function ProductsPage() {
             {
               title: '操作',
               key: 'op',
-              width: 250,
+              width: 120,
               fixed: 'right',
               render: (_: any, r: any) => (
                 <Space size={4} wrap>
                   <Button type="link" size="small" onClick={() => window.open(`/pricing?sku=${r.sku}`, '_blank')}>
                     核价
-                  </Button>
-                  <Button type="link" size="small" onClick={() => window.open(`/pricing?sku=${r.sku}&auto=1`, '_blank')}>
-                    自动核价
-                  </Button>
-                  <Button
-                    type="link"
-                    size="small"
-                    loading={fillingSku === r.sku}
-                    onClick={() => fillOneInfo(r.sku)}
-                  >
-                    补信息
                   </Button>
                   <Popconfirm
                     title={`删除「${r.sku}」？`}

@@ -8,6 +8,7 @@
  */
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
+import { BadRequestException } from '@nestjs/common';
 
 export interface ExcelImportRow {
   row: number;
@@ -37,6 +38,26 @@ export interface ExcelImportRow {
   supplyUrl?: string | null;
   offer1688Title?: string | null;
   retailUrl?: string | null;
+}
+
+/**
+ * 导入文件路径校验。
+ * 这个接口会拿用户传的路径去执行 `unzip -p`，等于「读服务器上的文件」，
+ * 所以必须先卡住扩展名 / 存在性 / 类型 / 大小，不能让任意路径直接进 execFileSync。
+ */
+export function assertExcelPath(filePath: string): string {
+  const p = String(filePath || '').trim();
+  if (!p) throw new BadRequestException('请填写 Excel 文件路径');
+  if (!/\.(xlsx|xls)$/i.test(p)) throw new BadRequestException('只支持 .xlsx / .xls 文件');
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(p);
+  } catch {
+    throw new BadRequestException('文件不存在或无法访问');
+  }
+  if (!st.isFile()) throw new BadRequestException('不是有效的文件');
+  if (st.size > 50 * 1024 * 1024) throw new BadRequestException('文件过大（>50MB）');
+  return p;
 }
 
 /** 用 unzip 从 xlsx 里读一个成员文件的文本 */

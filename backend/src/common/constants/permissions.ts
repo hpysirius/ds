@@ -32,6 +32,32 @@ export const PERMISSIONS: PermissionOption[] = [
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
 
+/**
+ * 角色等级（数值越大权限越高）。
+ * 用于阻止低权限账号把别人提升为超管 —— 例如 admin 不能创建/修改 super_admin，
+ * 否则「有用户管理权的 admin」一条请求就能造出超管接管全平台。
+ */
+/**
+ * 分页参数兜底：
+ * - 页码 < 1 会让 Prisma 的 skip 变成负数，直接抛错变成 500
+ * - 每页条数没有上限的话，一个 pageSize=100000 就能把整表拉进内存
+ */
+export function clampPage(p?: number | string | null): number {
+  const n = Number(p);
+  return Number.isFinite(n) ? Math.max(1, Math.trunc(n)) : 1;
+}
+
+export function clampPageSize(s?: number | string | null, fallback = 20, max = 200): number {
+  const n = Number(s);
+  return Number.isFinite(n) ? Math.min(Math.max(1, Math.trunc(n)), max) : fallback;
+}
+
+export function roleLevel(role?: string | null): number {
+  if (role === SUPER_ADMIN_ROLE) return 3;
+  if (role === ADMIN_ROLE) return 2;
+  return 1;
+}
+
 /** 数据库里存的 permissions 列是 JSON 字符串，这里解析回数组 */
 export function parsePermissions(raw: string | null | undefined): string[] {
   if (!raw) return [];
@@ -82,6 +108,21 @@ export function storeWhereClause(user: any, reqStoreId?: number | string | null)
     return {};
   }
   return { storeId: user.storeId ?? -1 };
+}
+
+/**
+ * 单条记录是否在当前账号可见范围内（详情 / 删除等按 id 操作的越权保护）。
+ *
+ * 必须与 storeWhereClause 保持同一语义，否则会出现「列表里看不到、按 id 却能读能删」的矛盾。
+ * 关键差异在「未挂店员工」：storeWhereClause 给它 storeId=-1（列表为空），
+ * 这里也必须返回 false —— 不能因为它自己 storeId 也是 null 就放行，
+ * 否则未挂店账号能读到全部 storeId=null 的全局/插件数据。
+ */
+export function inStoreScope(user: any, storeId: number | null): boolean {
+  if (!user) return true;
+  if (user.role === SUPER_ADMIN_ROLE) return true;
+  if (user.storeId == null) return false;
+  return user.storeId === storeId;
 }
 
 /**

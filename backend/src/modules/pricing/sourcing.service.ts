@@ -455,23 +455,119 @@ export class SourcingService {
   /**
    * 图片代理：Ozon / 1688 的图都有防盗链或跨域限制，前端要「复制图片到剪贴板」
    * 得先从同源接口拿到 blob，所以这里帮忙转一手。
+   *
+   * 注意这个接口是 @Public 的，等于任何人都能让服务器去请求任意地址 —— 所以必须：
+   *   1. 域名白名单（否则可探测内网 / 云元数据，即 SSRF）
+   *   2. 超时（否则慢速响应能把连接一直挂着）
+   *   3. 边读边限大小（先整块下载再判大小，等于没有限制）
    */
   async proxyImage(url: string): Promise<{ contentType: string; body: Buffer }> {
+    return this.proxyImageImpl(url, 0);
+  }
+
+  /**
+   * 图片代理允许的目标域名。
+   *
+   * ⚠️ 这里漏一个域名 = 商品库整列图片全挂（img 拿到 400 只会显示裂图），
+   * 所以新增图源时**务必先确认 CDN 域名**：
+   *   - Ozon 主站 ozon.ru，图片主 CDN ozone.ru
+   *   - Ozon 国际 CDN ozonstatic.com
+   *   - Ozon 中国区 CDN ozonstatic.cn（`ir-20.ozonstatic.cn`，中国大陆采集到的图基本都是它）
+   * 紧急情况可用环境变量 IMAGE_PROXY_HOSTS=host1,host2 临时追加，无需改代码重新部署。
+   */
+  private static readonly ALLOWED_IMAGE_HOSTS = [
+    'ozon.ru',
+    'ozone.ru',
+    'ozonstatic.com',
+    'ozonstatic.cn',
+    '1688.com',
+    'alicdn.com',
+    'alibaba.com',
+    'taobaocdn.com',
+  ];
+
+  /** 白名单 + 环境变量追加（IMAGE_PROXY_HOSTS=a.com,b.com），已去重小写 */
+  private static allowedImageHosts(): string[] {
+    const extra = String(process.env.IMAGE_PROXY_HOSTS || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    return Array.from(new Set([...SourcingService.ALLOWED_IMAGE_HOSTS, ...extra]));
+  }
+  private static readonly MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+  /**
+   * 校验图片地址是否在白名单内，返回 hostname。不合法一律抛 400。
+   * 所有「拿用户传进来的 URL 去 fetch」的地方都必须先过这一关（防 SSRF）。
+   */
+  private assertAllowedImageUrl(u: string): string {
+    if (!/^https?:\/\//i.test(String(u || '').trim())) throw new BadRequestException('图片地址不合法');
+    let host = '';
+    try {
+      host = new URL(String(u).trim()).hostname.toLowerCase();
+    } catch {
+      throw new BadRequestException('图片地址不合法');
+    }
+    const allowed = SourcingService.allowedImageHosts().some((h) => host === h || host.endsWith(`.${h}`));
+    if (!allowed) {
+      // 打日志，出现新的图源 CDN 时能从日志里直接看到该放行哪个域名
+      this.logger.warn(`图片域名不在白名单：${host}（如需放行，加入 ALLOWED_IMAGE_HOSTS 或设置 IMAGE_PROXY_HOSTS）`);
+      throw new BadRequestException('图片域名不在允许范围内');
+    }
+    return host;
+  }
+
+  private async proxyImageImpl(url: string, depth: number): Promise<{ contentType: string; body: Buffer }> {
     const u = String(url || '').trim();
-    if (!/^https?:\/\//i.test(u)) throw new BadRequestException('图片地址不合法');
+    this.assertAllowedImageUrl(u);
+
     const res = await fetch(u, {
       headers: {
         'User-Agent': DESKTOP_UA,
         Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
         Referer: /ozon/.test(u) ? 'https://www.ozon.ru/' : 'https://www.1688.com/',
       },
+      // 自己处理跳转：否则 302 可以把请求带到白名单之外的内网地址
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15000),
     });
+
+    const loc = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && loc) {
+      if (depth >= 3) throw new BadRequestException('图片跳转次数过多');
+      return this.proxyImageImpl(new URL(loc, u).href, depth + 1);
+    }
+
     if (!res.ok) throw new BadRequestException(`图片拉取失败 HTTP ${res.status}`);
     const contentType = res.headers.get('content-type') || 'image/jpeg';
     if (!/^image\//i.test(contentType)) throw new BadRequestException('不是图片内容');
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > 8 * 1024 * 1024) throw new BadRequestException('图片过大（>8MB）');
-    return { contentType, body: buf };
+
+    // Content-Length 先挡一道，但它不可信，真正兜底的是下面读取时的累计校验
+    const declared = Number(res.headers.get('content-length') || 0);
+    if (declared > SourcingService.MAX_IMAGE_BYTES) throw new BadRequestException('图片过大（>8MB）');
+
+    return { contentType, body: await this.readBodyWithLimit(res) };
+  }
+
+  /** 流式读取响应体，累计超过上限立即中断，避免把超大响应整块读进内存 */
+  private async readBodyWithLimit(res: { body?: any; arrayBuffer(): Promise<ArrayBuffer> }): Promise<Buffer> {
+    const limit = SourcingService.MAX_IMAGE_BYTES;
+    const reader = res.body?.getReader?.();
+    if (!reader) return Buffer.from(await res.arrayBuffer());
+    const chunks: Buffer[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > limit) throw new BadRequestException('图片过大（>8MB）');
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.cancel?.().catch(() => undefined);
+    }
+    return Buffer.concat(chunks);
   }
 
   /**
@@ -1109,10 +1205,14 @@ export class SourcingService {
    */
   async prepareImageSearch(imageUrl: string): Promise<{ pageUrl: string; uploaded: boolean; warnings: string[] }> {
     const warnings: string[] = [];
-    const ext = /\.(png|webp|jpeg)(\?|$)/i.test(imageUrl) ? RegExp.$1 : 'jpg';
+    const src = String(imageUrl || '').trim();
+    // 这个接口也是 @Public，不校验就等于给匿名用户开了个任意地址下载器
+    this.assertAllowedImageUrl(src);
+    const ext = /\.(png|webp|jpeg)(\?|$)/i.test(src) ? RegExp.$1 : 'jpg';
     const file = path.join(os.tmpdir(), `1688_search_${Date.now()}.${ext === 'jpeg' ? 'jpg' : ext}`);
-    const res = await fetch(imageUrl, {
+    const res = await fetch(src, {
       headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.ozon.ru/' },
+      signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) throw new BadRequestException(`商品图片下载失败 HTTP ${res.status}`);
     fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
@@ -1277,7 +1377,10 @@ export class SourcingService {
       const items = [...found.values()];
       for (const it of items.slice(0, 6)) {
         {
-          if (it.title && it.price != null) return;
+          // 已经有标题和价格就跳过补全。
+          // 注意这里是 continue —— 原来写成 return 会直接终止整个 scanTabs 方法、
+          // 返回 undefined，调用方 `scan.items.length` 会抛 Cannot read properties of undefined。
+          if (it.title && it.price != null) continue;
           try {
             const d = await this.fetchOfferHttp(it.offerUrl);
             if (d) {

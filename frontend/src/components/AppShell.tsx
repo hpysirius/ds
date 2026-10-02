@@ -22,7 +22,7 @@ import {
   isSuperAdmin,
   userPermissions,
 } from '@/lib/permissions';
-import { StoreProvider, useStore } from '@/lib/store-context';
+import { StoreProvider, useStore, STORAGE_KEY } from '@/lib/store-context';
 import { Select } from 'antd';
 import { ShopOutlined } from '@ant-design/icons';
 
@@ -162,6 +162,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const logout = () => {
     localStorage.removeItem('ds_token');
     localStorage.removeItem('ds_user');
+    // 也要清店铺选择，否则换账号登录后会沿用上一个人选的店铺
+    localStorage.removeItem(STORAGE_KEY);
     setUser(null);
     setAuthed(false);
     message.success('已退出');

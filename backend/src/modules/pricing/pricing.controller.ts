@@ -24,7 +24,8 @@ import {
 } from './dto/pricing.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { currentStoreId } from '../../common/constants/permissions';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { currentStoreId, USER_MANAGE_ROLES } from '../../common/constants/permissions';
 
 @ApiTags('核价')
 @Controller('pricing')
@@ -49,7 +50,9 @@ export class PricingController {
     return this.pricingService.getSettings();
   }
 
+  // 汇率/佣金是全站核价口径，不能让任意员工改（原来只要求登录，等于谁都能改）
   @ApiBearerAuth()
+  @Roles(...USER_MANAGE_ROLES)
   @Patch('settings')
   @ApiOperation({ summary: '修改核价默认参数' })
   updateSettings(@Body() dto: UpdateSettingDto) {
@@ -64,7 +67,9 @@ export class PricingController {
     return this.pricingService.listChannels({ country, vendor, category });
   }
 
+  // 渠道是共享基础数据，写操作收归管理角色（列表保持 @Public，前端未登录也要能算运费）
   @ApiBearerAuth()
+  @Roles(...USER_MANAGE_ROLES)
   @Post('channels')
   @ApiOperation({ summary: '新增物流渠道' })
   createChannel(@Body() dto: UpsertChannelDto) {
@@ -72,6 +77,7 @@ export class PricingController {
   }
 
   @ApiBearerAuth()
+  @Roles(...USER_MANAGE_ROLES)
   @Post('channels/reset')
   @ApiOperation({ summary: '恢复内置渠道（清空后重建）' })
   resetChannels() {
@@ -79,6 +85,7 @@ export class PricingController {
   }
 
   @ApiBearerAuth()
+  @Roles(...USER_MANAGE_ROLES)
   @Patch('channels/:id')
   @ApiOperation({ summary: '修改物流渠道' })
   updateChannel(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateChannelDto) {
@@ -86,6 +93,7 @@ export class PricingController {
   }
 
   @ApiBearerAuth()
+  @Roles(...USER_MANAGE_ROLES)
   @Delete('channels/:id')
   @ApiOperation({ summary: '删除物流渠道' })
   removeChannel(@Param('id', ParseIntPipe) id: number) {
@@ -310,11 +318,13 @@ export class PricingController {
     return this.pricingService.removeRecord(id, user);
   }
 
+  // 这个接口会让服务器去读本地文件并全量写库，必须是管理角色
   @ApiBearerAuth()
+  @Roles(...USER_MANAGE_ROLES)
   @Post('records/import-excel')
   @ApiOperation({ summary: '从 Excel《定价表》导入定价记录（按 工作表!行号 幂等）' })
-  importExcel(@Body() dto: ImportExcelDto) {
-    return this.pricingService.importPricingExcel(dto.path, dto.sheet || '定价表', dto.replace === true);
+  importExcel(@Body() dto: ImportExcelDto, @CurrentUser() user: any) {
+    return this.pricingService.importPricingExcel(dto.path, dto.sheet || '定价表', dto.replace === true, user);
   }
 
   @ApiBearerAuth()

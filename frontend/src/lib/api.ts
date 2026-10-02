@@ -130,6 +130,23 @@ function fileNameFromDisposition(header?: string): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+/**
+ * 商品图统一走同源代理。
+ *
+ * Ozon（ir-*.ozonstatic.cn / *.ozone.ru）的图带防盗链，直接在 <img src> 里用原地址
+ * 会 403 → 列表里只显示裂图，所以必须经后端 `pricing/sourcing/image-proxy` 转一手。
+ * 所有展示商品图的地方都用这个函数，别再直接写 <img src={imageUrl}>。
+ *
+ * @param u 原始图片地址（支持 `//host/x.jpg` 这种协议相对写法）
+ * @returns 可直接放进 img src 的地址；地址为空/非法时返回 ''
+ */
+export function proxyImageUrl(u?: string | null): string {
+  if (!u) return '';
+  const abs = u.startsWith('//') ? `https:${u}` : u;
+  if (!/^https?:\/\//i.test(abs)) return '';
+  return `${API_BASE}/pricing/sourcing/image-proxy?url=${encodeURIComponent(abs)}`;
+}
+
 export interface RuleSet {
   salesMin: number;
   salesMax: number;

@@ -20,6 +20,16 @@
 - 定价相关页面：`src/app/pricing/page.tsx`（Tab：定价记录/物流渠道/参数设置）+ `src/app/pricing/Workbench.tsx`（定价工作台，含 1688 抓取与回填）。
 - 列表操作列尽量用 `Button type="link" size="small"` + `Popconfirm` 二次确认，与既有风格一致。
 - **多租户店铺隔离（见下节）**：任何数据页请求都要带 `storeId`（超管可切店，员工锁定本店），从 `useStore()` 取 `storeParam`。
+- **商品图一律走同源代理**：统一用 `lib/api.ts` 的 `proxyImageUrl(u)`，**不要写 `<img src={商品图原地址}>`** —— Ozon（`ir-*.ozonstatic.cn`）/1688 的图有防盗链，直连会 403，页面只显示裂图且控制台看不出明显错误。后端代理是 `@Public` 的 `GET pricing/sourcing/image-proxy`。
+- **改图片代理白名单前必须先统计真实域名**：白名单在 `sourcing.service.ts` 的 `ALLOWED_IMAGE_HOSTS`（含 `ozon.ru`/`ozone.ru`/`ozonstatic.com`/`ozonstatic.cn`/`1688.com`/`alicdn.com`…）。**漏一个域名 = 整站商品图静默裂图**（2026-10-02 就因漏 `ozonstatic.cn` 出过一次线上故障）。统计命令：`select substring_index(substring_index(imageUrl,'/',3),'//',-1) host, count(*) from ds.products group by host`。紧急放行可用环境变量 `IMAGE_PROXY_HOSTS=a.com,b.com`，免改代码。
+
+## 产品边界（运营决定，勿擅自恢复）
+- **不要做「自动去 1688 抓取」的功能**。1688 风控极严，自动化请求（关键词搜同款、以图搜款、批量抓详情）几乎必然触发滑块验证，做了也没法稳定用。2026-10-03 已按运营要求整体下线：
+  - 商品库：无「自动核价」「补信息」入口（操作列只剩「核价」「删除」）。
+  - 定价工作台 1688 那一行：**只保留「复制图片」**（人工复制主图 → 到浏览器 1688 图搜页粘贴）。
+  - 工作台无「一键自动核价」、无「自动核价进度」。
+- **保留的 1688 交互是「人工触发、单次、有明确 URL」的**：手工贴 `detail.1688.com/offer/xxx` 链接后点「抓取 1688 价格/包装信息」。加任何新的 1688 自动化前先问运营。
+- 后端相关接口（`pricing/sourcing/search-keyword`、`scan-tabs`、`prepare-search`、`trigger-search`、`cookie`、`sync-cookie`、`pricing/products/fill-info`、`sourcing/product-info`）**都还在**，只是前端没入口；要恢复接回前端即可。
 
 ## 多租户「店铺」隔离（核心架构，2026-10-02 落地）
 - 隔离维度：`Store` 模型 + 各业务表 `storeId Int?`（User/CollectTask/Product/PricingRecord/FilterPreset/ScreeningRun）。员工 `User.storeId` 一对一挂店（非多对多）。
