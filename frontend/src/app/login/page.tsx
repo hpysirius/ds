@@ -1,13 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { Button, Card, Form, Input, Typography, message } from 'antd';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { http } from '@/lib/api';
 
 export default function LoginPage() {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [form] = Form.useForm();
 
@@ -18,10 +16,12 @@ export default function LoginPage() {
       localStorage.setItem('ds_token', data.accessToken);
       localStorage.setItem('ds_user', JSON.stringify(data.user));
       message.success('登录成功');
-      // 回到登录前想访问的页面；没有则回首页
+      // 回到登录前想访问的页面；没有则回首页。
+      // 这里用整页跳转（而不是 router.replace），让 AppShell 重新挂载并向后端拉取最新的用户信息（含页面权限）。
       const params = new URLSearchParams(window.location.search);
       const redirect = params.get('redirect');
-      router.replace(redirect && redirect.startsWith('/') ? redirect : '/');
+      const target = redirect && redirect.startsWith('/') ? redirect : '/';
+      window.location.href = target;
     } catch (e: any) {
       message.error(e?.message || '登录失败');
     } finally {

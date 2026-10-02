@@ -1,5 +1,18 @@
-import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import {
+  ArrayUnique,
+  IsArray,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+/** 允许的角色：super_admin 超级管理员 / admin 管理员 / user 员工 */
+export const ALLOWED_ROLES = ['super_admin', 'admin', 'user'];
 
 export class CreateUserDto {
   @ApiProperty({ description: '登录名' })
@@ -19,8 +32,29 @@ export class CreateUserDto {
   @MaxLength(50)
   nickname?: string;
 
-  @ApiProperty({ description: '角色', required: false })
+  @ApiProperty({
+    description: '角色：super_admin 超级管理员 / admin 管理员 / user 员工',
+    required: false,
+    example: 'user',
+  })
   @IsOptional()
-  @IsString()
+  @IsIn(ALLOWED_ROLES, { message: '角色不合法' })
   role?: string;
+
+  @ApiProperty({ description: '页面权限 key 列表', required: false, example: ['dashboard', 'products'] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayUnique()
+  permissions?: string[];
+
+  @ApiProperty({ description: '状态：1 启用 0 停用', required: false, example: 1 })
+  @IsOptional()
+  @IsInt()
+  status?: number;
+
+  @ApiProperty({ description: '所属角色 id（页面权限由角色决定）；传 null 表示取消角色', required: false })
+  @IsOptional()
+  @IsInt()
+  roleId?: number;
 }

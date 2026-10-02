@@ -16,16 +16,40 @@ model User {
   username    String    @unique @db.VarChar(50) // 登录名
   password    String    @db.VarChar(200) // bcrypt 哈希
   nickname    String?   @db.VarChar(50) // 昵称
-  role        String    @default("user") @db.VarChar(20) // admin / user
+  role        String    @default("user") @db.VarChar(20) // super_admin / admin / user
   status      Int       @default(1) // 1 启用 0 禁用
+  /// 页面权限：存 JSON 字符串数组，如 ["dashboard","products"]。
+  /// 实际生效权限 = 角色权限优先；没分配角色时用它兜底；super_admin 恒为全部。
+  permissions String?   @db.Text
+  /// 所属角色（页面权限主要由它决定）
+  roleId      Int?
   lastLoginAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   tasks   CollectTask[]
   presets FilterPreset[]
+  /// 注意：字段名不能叫 role，User.role 已经是角色字符串列
+  roleRef Role?        @relation(fields: [roleId], references: [id], onDelete: SetNull)
 
+  @@index([roleId])
   @@map("users")
+}
+
+// ============ 角色 ============
+model Role {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(50) // 角色名，如「选品专员」
+  code        String   @unique @db.VarChar(50) // 唯一编码，如 selector
+  /// 页面权限：JSON 字符串数组，分配给该角色的页面
+  permissions String?  @db.Text
+  remark      String?  @db.VarChar(200)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
+
+  @@map("roles")
 }
 
 // ============ 采集任务 ============

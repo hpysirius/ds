@@ -3,6 +3,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../../users/users.service';
+import { resolvePermissions } from '../../../common/constants/permissions';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -18,8 +19,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
-    const user = await this.usersService.findById(payload.sub);
+    const user = await this.usersService.findByIdWithRole(payload.sub);
     if (!user || user.status !== 1) throw new UnauthorizedException('账号不存在或已禁用');
-    return { id: user.id, username: user.username, nickname: user.nickname, role: user.role };
+    return {
+      id: user.id,
+      username: user.username,
+      nickname: user.nickname,
+      role: user.role,
+      // 最终生效的页面权限：超管全量 > 角色权限 > 个人权限；前端菜单与路由守卫按它过滤
+      permissions: resolvePermissions(user),
+    };
   }
 }
