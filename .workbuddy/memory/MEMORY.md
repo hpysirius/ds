@@ -20,6 +20,7 @@
 - 定价相关页面：`src/app/pricing/page.tsx`（Tab：定价记录/物流渠道/参数设置）+ `src/app/pricing/Workbench.tsx`（定价工作台，含 1688 抓取与回填）。
 - 列表操作列尽量用 `Button type="link" size="small"` + `Popconfirm` 二次确认，与既有风格一致。
 - **多租户店铺隔离（见下节）**：任何数据页请求都要带 `storeId`（超管可切店，员工锁定本店），从 `useStore()` 取 `storeParam`。
+- **全员可见页面**：若某页要「所有登录用户都能看」而不属于业务权限，**不要**登记进 `lib/permissions.ts` 的 `PERMISSIONS`（不登记 → `ROUTE_PERMISSION` 里没有它 → 路由守卫直接放行），只在 `AppShell.tsx` 的 `menus` 里无条件 `items.push(...)`。示范：`/guide`「使用说明」（`app/guide/page.tsx`，纯静态文案 + 流程图，无接口）。
 - **商品图一律走同源代理**：统一用 `lib/api.ts` 的 `proxyImageUrl(u)`，**不要写 `<img src={商品图原地址}>`** —— Ozon（`ir-*.ozonstatic.cn`）/1688 的图有防盗链，直连会 403，页面只显示裂图且控制台看不出明显错误。后端代理是 `@Public` 的 `GET pricing/sourcing/image-proxy`。
 - **改图片代理白名单前必须先统计真实域名**：白名单在 `sourcing.service.ts` 的 `ALLOWED_IMAGE_HOSTS`（含 `ozon.ru`/`ozone.ru`/`ozonstatic.com`/`ozonstatic.cn`/`1688.com`/`alicdn.com`…）。**漏一个域名 = 整站商品图静默裂图**（2026-10-02 就因漏 `ozonstatic.cn` 出过一次线上故障）。统计命令：`select substring_index(substring_index(imageUrl,'/',3),'//',-1) host, count(*) from ds.products group by host`。紧急放行可用环境变量 `IMAGE_PROXY_HOSTS=a.com,b.com`，免改代码。
 
@@ -59,4 +60,6 @@
 - `npm run build`（nest）会因清 dist 触发 safe-delete 拦截 → 用 `npx tsc -p tsconfig.build.json`（只覆盖写）。
 - `next build` 前清 `.next` 会被 safe-delete 拦 → 用 `mv .next /tmp/ds-next-old-$(date +%s)` 移走替代 `rm -rf`；构建用 `env -u NODE_OPTIONS npx next build`（去掉注入的 fs shim，否则 mkdir EEXIST）。
 - 前/后端重建后都要**重启进程**（旧进程内存里是旧 manifest / 旧代码）。
-- npm registry 在本机不通，尽量零依赖实现（如已自写 CONNECT 代理 `sourcing.proxy.ts`）。
+- npm registry 在本机不通，尽量零依赖实现（如已自写 CONNECT 代理 `sourcing.proxy.ts`）。也导致 `agent-browser` 之类工具装不上，无法做登录后截图。
+- macOS 无 `setsid`；`nohup ... &` 起的服务仍会在**本次工具调用结束时被杀**，起常驻服务只能用后台任务方式。
+- 校验前端页面内容别用 `curl 页面URL`：AppShell 是客户端组件，SSR 只输出「加载中…」。要 grep 构建产物 `.next/static/chunks/app/<route>/*.js` 或线上同名 chunk（加 `--compressed`）。

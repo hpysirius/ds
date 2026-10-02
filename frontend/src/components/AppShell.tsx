@@ -9,6 +9,7 @@ import {
   CloudDownloadOutlined,
   DashboardOutlined,
   FilterOutlined,
+  ReadOutlined,
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -155,6 +156,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         children: systemChildren,
       });
     }
+
+    // 使用说明：面向所有登录用户，不纳入权限体系（没在 ROUTE_PERMISSION 里 → 不做页面校验）
+    items.push({ key: '/guide', icon: <ReadOutlined />, label: '使用说明' });
 
     return items;
   }, [user]);
