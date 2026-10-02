@@ -19,8 +19,12 @@ import {
   canAccess,
   canManageUsers,
   firstAllowedPath,
+  isSuperAdmin,
   userPermissions,
 } from '@/lib/permissions';
+import { StoreProvider, useStore } from '@/lib/store-context';
+import { Select } from 'antd';
+import { ShopOutlined } from '@ant-design/icons';
 
 const { Header, Sider, Content } = Layout;
 
@@ -137,14 +141,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
 
     if (canManageUsers(user)) {
+      const systemChildren: any[] = [
+        { key: '/system/users', label: '员工账号' },
+        { key: '/system/roles', label: '角色管理' },
+      ];
+      if (isSuperAdmin(user)) {
+        systemChildren.push({ key: '/system/stores', label: '店铺管理' });
+      }
       items.push({
         key: 'system-group',
         icon: <SettingOutlined />,
         label: '系统管理',
-        children: [
-          { key: '/system/users', label: '员工账号' },
-          { key: '/system/roles', label: '角色管理' },
-        ],
+        children: systemChildren,
       });
     }
 
@@ -187,55 +195,86 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider theme="light" width={208} style={{ borderRight: '1px solid #f0f0f0' }}>
-        <div style={{ padding: '18px 20px 14px' }}>
-          <div style={{ fontSize: 16, fontWeight: 500 }}>电商选品分析</div>
-          <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 2 }}>Ozon Selection</div>
-        </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[pathname]}
-          openKeys={openKeys}
-          onOpenChange={setOpenKeys}
-          items={menus}
-          style={{ borderInlineEnd: 'none' }}
-          onClick={(e) => {
-            if (e.key.startsWith('/')) router.push(e.key);
-          }}
-        />
-      </Sider>
-      <Layout>
-        <Header
-          style={{
-            background: '#fff',
-            borderBottom: '1px solid #f0f0f0',
-            padding: '0 24px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            height: 56,
-          }}
-        >
-          {user ? (
-            <Space>
-              <Tag color={user.role === 'super_admin' ? 'red' : user.role === 'admin' ? 'blue' : 'default'}>
-                {ROLE_TEXT[user.role] || '用户'}
-              </Tag>
-              <Avatar size="small" icon={<UserOutlined />} />
-              <span style={{ fontSize: 13 }}>{user.nickname || user.username}</span>
-              <Button type="link" size="small" onClick={logout}>
-                退出
+    <StoreProvider user={user}>
+      <Layout style={{ minHeight: '100vh' }}>
+        <Sider theme="light" width={208} style={{ borderRight: '1px solid #f0f0f0' }}>
+          <div style={{ padding: '18px 20px 14px' }}>
+            <div style={{ fontSize: 16, fontWeight: 500 }}>电商选品分析</div>
+            <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 2 }}>Ozon Selection</div>
+          </div>
+          <Menu
+            mode="inline"
+            selectedKeys={[pathname]}
+            openKeys={openKeys}
+            onOpenChange={setOpenKeys}
+            items={menus}
+            style={{ borderInlineEnd: 'none' }}
+            onClick={(e) => {
+              if (e.key.startsWith('/')) router.push(e.key);
+            }}
+          />
+        </Sider>
+        <Layout>
+          <Header
+            style={{
+              background: '#fff',
+              borderBottom: '1px solid #f0f0f0',
+              padding: '0 24px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              height: 56,
+              gap: 12,
+            }}
+          >
+            <StoreSwitcher />
+            {user ? (
+              <Space>
+                <Tag color={user.role === 'super_admin' ? 'red' : user.role === 'admin' ? 'blue' : 'default'}>
+                  {ROLE_TEXT[user.role] || '用户'}
+                </Tag>
+                <Avatar size="small" icon={<UserOutlined />} />
+                <span style={{ fontSize: 13 }}>{user.nickname || user.username}</span>
+                <Button type="link" size="small" onClick={logout}>
+                  退出
+                </Button>
+              </Space>
+            ) : (
+              <Button type="primary" size="small" onClick={() => router.push('/login')}>
+                登录
               </Button>
-            </Space>
-          ) : (
-            <Button type="primary" size="small" onClick={() => router.push('/login')}>
-              登录
-            </Button>
-          )}
-        </Header>
-        <Content style={{ padding: 20 }}>{children}</Content>
+            )}
+          </Header>
+          <Content style={{ padding: 20 }}>{children}</Content>
+        </Layout>
       </Layout>
-    </Layout>
+    </StoreProvider>
+  );
+}
+
+/** 顶部店铺切换器：仅超级管理员可见，可在「全部店铺」与具体店铺间切换；普通员工锁定在本店 */
+function StoreSwitcher() {
+  const { isSuper, stores, loading, currentStoreId, setCurrentStoreId } = useStore();
+
+  if (!isSuper) return null;
+
+  const options = [
+    { value: 'all', label: '全部店铺' },
+    ...stores.map((s) => ({ value: String(s.id), label: s.name })),
+  ];
+
+  return (
+    <Space size={6}>
+      <ShopOutlined style={{ color: '#8c8c8c' }} />
+      <Select
+        size="small"
+        style={{ width: 180 }}
+        loading={loading}
+        value={currentStoreId == null ? 'all' : String(currentStoreId)}
+        options={options}
+        onChange={(v: string) => setCurrentStoreId(v === 'all' ? null : Number(v))}
+        placeholder="选择店铺"
+      />
+    </Space>
   );
 }

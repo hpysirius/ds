@@ -1,29 +1,33 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { storeWhereClause } from '../../common/constants/permissions';
 
 @Injectable()
 export class StatsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async overview() {
+  async overview(user?: any, storeId?: string) {
+    const where = storeWhereClause(user, storeId);
     const since = new Date(Date.now() - 24 * 3600 * 1000);
 
     const [productTotal, newToday, taskTotal, runningTasks, noReview, fbsCount, avgRow] = await Promise.all([
-      this.prisma.product.count(),
-      this.prisma.product.count({ where: { firstSeenAt: { gte: since } } }),
-      this.prisma.collectTask.count(),
-      this.prisma.collectTask.count({ where: { status: 'running' } }),
-      this.prisma.product.count({ where: { reviewsCount: 0 } }),
-      this.prisma.product.count({ where: { salesSchema: 'FBS' } }),
+      this.prisma.product.count({ where }),
+      this.prisma.product.count({ where: { ...where, firstSeenAt: { gte: since } } }),
+      this.prisma.collectTask.count({ where }),
+      this.prisma.collectTask.count({ where: { ...where, status: 'running' } }),
+      this.prisma.product.count({ where: { ...where, reviewsCount: 0 } }),
+      this.prisma.product.count({ where: { ...where, salesSchema: 'FBS' } }),
       this.prisma.product.aggregate({
         _avg: { soldCount: true, convToCartPdp: true, cancelRate: true },
+        where,
       }),
     ]);
 
-    const lastRun = await this.prisma.screeningRun.findFirst({ orderBy: { id: 'desc' } });
+    const lastRun = await this.prisma.screeningRun.findFirst({ where, orderBy: { id: 'desc' } });
     const categories = await this.prisma.product.groupBy({
       by: ['category3Name'],
       _count: { _all: true },
+      where,
       orderBy: { _count: { category3Name: 'desc' } },
       take: 10,
     });
@@ -40,13 +44,13 @@ export class StatsService {
     const salesDistribution = [];
     for (const b of buckets) {
       const count = await this.prisma.product.count({
-        where: { soldCount: { gte: b.min < 0 ? 0 : b.min, lte: b.max } },
+        where: { ...where, soldCount: { gte: b.min < 0 ? 0 : b.min, lte: b.max } },
       });
       salesDistribution.push({ label: b.label, count });
     }
 
     const topProducts = await this.prisma.product.findMany({
-      where: { reviewsCount: 0, salesSchema: 'FBS' },
+      where: { ...where, reviewsCount: 0, salesSchema: 'FBS' },
       orderBy: [{ convToCartPdp: 'desc' }, { soldCount: 'desc' }],
       take: 10,
       select: {

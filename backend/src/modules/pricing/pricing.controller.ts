@@ -24,6 +24,7 @@ import {
 } from './dto/pricing.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { currentStoreId } from '../../common/constants/permissions';
 
 @ApiTags('核价')
 @Controller('pricing')
@@ -256,73 +257,72 @@ export class PricingController {
     return this.sourcingService.fetchOffer(dto.url, dto.allowBrowser === true);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get('products')
-  @ApiOperation({ summary: '商品库检索，供定价工作台选品' })
-  searchProducts(@Query('keyword') keyword = '', @Query('limit') limit?: number) {
-    return this.pricingService.searchProducts(keyword, limit ? Number(limit) : 20);
+  @ApiOperation({ summary: '商品库检索，供定价工作台选品（按店铺隔离）' })
+  searchProducts(@Query() query: any, @CurrentUser() user: any) {
+    const keyword = query?.keyword || '';
+    const limit = query?.limit ? Number(query.limit) : 20;
+    const storeId = query?.storeId;
+    return this.pricingService.searchProducts(keyword, limit, user, storeId);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get('from-product/:sku')
-  @ApiOperation({ summary: '从商品库带出重量/尺寸/价格' })
-  fromProduct(@Param('sku') sku: string) {
-    return this.pricingService.fromProduct(sku);
+  @ApiOperation({ summary: '从商品库带出重量/尺寸/价格（按店铺隔离）' })
+  fromProduct(@Param('sku') sku: string, @CurrentUser() user: any, @Query('storeId') storeId?: string) {
+    return this.pricingService.fromProduct(sku, user);
   }
 
   // ---- 定价记录 ----
-  @Public()
+  @ApiBearerAuth()
   @Get('records')
-  @ApiOperation({ summary: '核价记录列表' })
-  listRecords(@Query() query: QueryRecordDto) {
-    return this.pricingService.listRecords(query);
+  @ApiOperation({ summary: '核价记录列表（按店铺隔离）' })
+  listRecords(@Query() query: QueryRecordDto, @CurrentUser() user: any) {
+    return this.pricingService.listRecords(query, user);
   }
 
   @ApiBearerAuth()
-  @Public()
   @Post('records')
   @ApiOperation({ summary: '保存核价记录' })
-  createRecord(@Body() dto: CreateRecordDto, @CurrentUser('id') userId: number) {
-    return this.pricingService.createRecord(dto, userId);
+  createRecord(@Body() dto: CreateRecordDto, @CurrentUser() user: any, @Query('storeId') storeId?: string) {
+    return this.pricingService.createRecord(dto, user.id, currentStoreId(user, storeId));
   }
 
   @ApiBearerAuth()
-  @Public()
   @Patch('records/:id')
   @ApiOperation({ summary: '修改核价记录' })
-  updateRecord(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateRecordDto) {
-    return this.pricingService.updateRecord(id, dto);
+  updateRecord(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateRecordDto, @CurrentUser() user: any) {
+    return this.pricingService.updateRecord(id, dto, user);
   }
 
   @ApiBearerAuth()
-  @Public()
   @Post('records/listing')
   @ApiOperation({ summary: '上架 / 下架核价记录（ids 支持批量）' })
-  setListing(@Body() dto: ListingDto) {
-    return this.pricingService.setListing(dto.ids, dto.listed);
+  setListing(@Body() dto: ListingDto, @CurrentUser() user: any) {
+    return this.pricingService.setListing(dto.ids, dto.listed, user);
   }
 
   @ApiBearerAuth()
-  @Public()
   @Delete('records/:id')
   @ApiOperation({ summary: '删除核价记录' })
-  removeRecord(@Param('id', ParseIntPipe) id: number) {
-    return this.pricingService.removeRecord(id);
+  removeRecord(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+    return this.pricingService.removeRecord(id, user);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Post('records/import-excel')
   @ApiOperation({ summary: '从 Excel《定价表》导入定价记录（按 工作表!行号 幂等）' })
   importExcel(@Body() dto: ImportExcelDto) {
     return this.pricingService.importPricingExcel(dto.path, dto.sheet || '定价表', dto.replace === true);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get('records/export')
   @Header('Content-Type', 'text/csv; charset=utf-8')
-  @ApiOperation({ summary: '导出核价表 CSV（列头与原定价表一致，支持 keyword/listed/higherThanRetail 筛选）' })
-  async export(@Res() res: Response, @Query() query: QueryRecordDto) {
-    const csv = await this.pricingService.exportCsv(query);
+  @ApiOperation({ summary: '导出核价表 CSV（列头与原定价表一致，支持 keyword/listed/higherThanRetail/店铺 筛选）' })
+  async export(@Res() res: Response, @Query() query: QueryRecordDto, @CurrentUser() user: any) {
+    const csv = await this.pricingService.exportCsv(query, user);
     res.setHeader('Content-Disposition', 'attachment; filename="pricing.csv"');
     res.send(csv);
   }

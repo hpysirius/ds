@@ -4,15 +4,17 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Card, Col, Empty, Progress, Row, Space, Statistic, Table, Tag, message } from 'antd';
 import { http, GRADE_TEXT } from '@/lib/api';
+import { useStore } from '@/lib/store-context';
 
 export default function DashboardPage() {
+  const { storeParam } = useStore();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      setData((await http.get('/stats/overview')).data);
+      setData((await http.get('/stats/overview', { params: storeParam })).data);
     } catch (e: any) {
       message.error(e.message);
     } finally {
@@ -22,7 +24,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeParam]);
 
   const counts = data?.lastRun?.counts || {};
 

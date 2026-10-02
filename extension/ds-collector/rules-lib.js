@@ -142,6 +142,50 @@ export function matchRule(item, rule) {
 }
 
 /**
+ * 规则是否带「实际过滤条件」。
+ *
+ * 只填了标签名、条件全留空的规则会命中**全部**商品 —— 拿它当过滤器等于不过滤。
+ * 所以过滤模式只认「至少有一个条件」的规则：品牌（仅无品牌 / 品牌含关键字）、
+ * 发货模式、或任意一个范围条件（min/max 至少填了一个）。
+ */
+export function ruleHasConstraints(rule) {
+  if (!rule || rule.enabled === false) return false;
+  if (rule.salesSchema) return true;
+  const b = rule.brand;
+  if (b === 'none') return true;
+  if (b === 'custom' && String(rule.brandText || '').trim()) return true;
+  const conds = rule.conds || {};
+  for (const def of RULE_DEFS) {
+    const c = conds[def.key];
+    if (!c) continue;
+    const min = c.min === '' || c.min == null ? null : Number(c.min);
+    const max = c.max === '' || c.max == null ? null : Number(c.max);
+    if (min != null || max != null) return true;
+  }
+  return false;
+}
+
+/**
+ * 过滤模式判定：商品是否命中任意一条「带条件的启用规则」。
+ *   - 命中 → true（允许采集入库）
+ *   - 全不命中 → false（过滤模式下直接丢弃，不上报）
+ *   - 一条「带条件的启用规则」都没有 → 全部放行（true），避免把商品全滤光。
+ *
+ * 注意：字段读不到的（比如列表页没渲染评论数 → reviewsCount = null）按「不命中」处理
+ * （与 matchRule 的「宁缺毋滥」一致），所以列表页采集时评论数读不到的商品会被过滤掉。
+ */
+export function passesFilter(item, rules) {
+  const list = (Array.isArray(rules) ? rules : []).filter(ruleHasConstraints);
+  if (!list.length) return true; // 没有可用作过滤的规则 → 过滤不生效
+  for (const r of list) {
+    try {
+      if (matchRule(item, r)) return true;
+    } catch (e) { /* 单条规则出错不影响其它规则 */ }
+  }
+  return false;
+}
+
+/**
  * 对一个商品应用全部规则 → 命中的标签数组（按优先级升序，数字小的在前）。
  * 永远返回数组，没命中就是空数组。
  */

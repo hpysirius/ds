@@ -76,6 +76,15 @@ $('useServer').onclick = () => usePreset(PRESET_SERVER);
 // 采集规则管理页（新增/编辑/启停规则，采集时自动按规则打标签）
 $('rules').onclick = () => chrome.runtime.openOptionsPage();
 
+// 过滤模式：开启后采集时只保留命中规则的商品（存本地，background 采集时读取）
+const FILTER_KEY = 'ds_filter_mode';
+chrome.storage.local.get([FILTER_KEY]).then((s) => {
+  $('filterMode').checked = !!s[FILTER_KEY];
+});
+$('filterMode').onchange = async () => {
+  await chrome.storage.local.set({ [FILTER_KEY]: $('filterMode').checked });
+};
+
 $('collect').onclick = async () => {
   $('collect').disabled = true;
   $('collect').textContent = '采集中…';

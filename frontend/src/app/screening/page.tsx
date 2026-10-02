@@ -24,6 +24,7 @@ import {
 } from 'antd';
 import { DownloadOutlined, PlayCircleOutlined, SaveOutlined } from '@ant-design/icons';
 import { http, GRADE_TEXT, GRADE_COLOR, RuleSet } from '@/lib/api';
+import { useStore } from '@/lib/store-context';
 
 const GRADE_OPTIONS = [
   { label: '全部', value: '' },
@@ -54,6 +55,7 @@ const RULE_HINTS: Record<string, string> = {
 };
 
 export default function ScreeningPage() {
+  const { storeParam } = useStore();
   const [presets, setPresets] = useState<any[]>([]);
   const [presetId, setPresetId] = useState<number>();
   const [rules, setRules] = useState<RuleSet | null>(null);
@@ -69,7 +71,7 @@ export default function ScreeningPage() {
   const [saveForm] = Form.useForm();
 
   const loadPresets = async () => {
-    const { data } = await http.get('/screening/presets');
+    const { data } = await http.get('/screening/presets', { params: storeParam });
     setPresets(data);
     const def = data.find((p: any) => p.isDefault) || data[0];
     if (def) {
@@ -79,7 +81,7 @@ export default function ScreeningPage() {
   };
 
   const loadRuns = async () => {
-    const { data } = await http.get('/screening/runs', { params: { pageSize: 10 } });
+    const { data } = await http.get('/screening/runs', { params: { pageSize: 10, ...storeParam } });
     setRuns(data.list);
   };
 
@@ -95,7 +97,7 @@ export default function ScreeningPage() {
     loadPresets().catch((e) => message.error(e.message));
     loadRuns().catch(() => void 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [storeParam]);
 
   useEffect(() => {
     if (runId) loadItems(runId, grade, 1);
@@ -106,7 +108,7 @@ export default function ScreeningPage() {
     if (!rules) return;
     setRunning(true);
     try {
-      const { data } = await http.post('/screening/run', { rules });
+      const { data } = await http.post('/screening/run', { rules }, { params: storeParam });
       message.success(
         `筛选完成：优先跟进 ${data.counts['优先跟进']}、可跟进 ${data.counts['可跟进']}、观察 ${data.counts['观察']}、淘汰 ${data.counts['淘汰']}`,
       );
@@ -124,7 +126,7 @@ export default function ScreeningPage() {
     const values = await saveForm.validateFields();
     if (!rules) return;
     try {
-      await http.post('/screening/presets', { ...values, rules });
+      await http.post('/screening/presets', { ...values, rules }, { params: storeParam });
       message.success('已保存为新预设');
       setSaveOpen(false);
       saveForm.resetFields();

@@ -57,4 +57,9 @@ export class CreateUserDto {
   @IsOptional()
   @IsInt()
   roleId?: number;
+
+  @ApiProperty({ description: '所属店铺 id；员工挂在店铺下，数据按店铺隔离。传 null 表示不归属店铺', required: false })
+  @IsOptional()
+  @IsInt()
+  storeId?: number;
 }

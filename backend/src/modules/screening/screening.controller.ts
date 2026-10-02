@@ -8,6 +8,7 @@ import { RunScreeningDto } from './dto/run-screening.dto';
 import { QueryRunDto } from './dto/query-run.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { currentStoreId } from '../../common/constants/permissions';
 
 @ApiTags('智能筛选')
 @Controller('screening')
@@ -15,11 +16,11 @@ export class ScreeningController {
   constructor(private readonly screeningService: ScreeningService) {}
 
   // ---- 规则预设 ----
-  @Public()
+  @ApiBearerAuth()
   @Get('presets')
-  @ApiOperation({ summary: '规则预设列表' })
-  listPresets() {
-    return this.screeningService.listPresets();
+  @ApiOperation({ summary: '规则预设列表（按店铺隔离）' })
+  listPresets(@CurrentUser() user: any, @Query('storeId') storeId?: string) {
+    return this.screeningService.listPresets(user, storeId);
   }
 
   @Public()
@@ -32,52 +33,52 @@ export class ScreeningController {
   @ApiBearerAuth()
   @Post('presets')
   @ApiOperation({ summary: '新建规则预设' })
-  createPreset(@Body() dto: CreatePresetDto, @CurrentUser('id') userId: number) {
-    return this.screeningService.createPreset(dto, userId);
+  createPreset(@Body() dto: CreatePresetDto, @CurrentUser() user: any, @Query('storeId') storeId?: string) {
+    return this.screeningService.createPreset(dto, user.id, currentStoreId(user, storeId));
   }
 
   @ApiBearerAuth()
   @Patch('presets/:id')
   @ApiOperation({ summary: '修改规则预设' })
-  updatePreset(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdatePresetDto) {
-    return this.screeningService.updatePreset(id, dto);
+  updatePreset(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdatePresetDto, @CurrentUser() user: any) {
+    return this.screeningService.updatePreset(id, dto, user);
   }
 
   @ApiBearerAuth()
   @Delete('presets/:id')
   @ApiOperation({ summary: '删除规则预设' })
-  removePreset(@Param('id', ParseIntPipe) id: number) {
-    return this.screeningService.removePreset(id);
+  removePreset(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+    return this.screeningService.removePreset(id, user);
   }
 
   // ---- 执行与结果 ----
-  @Public()
+  @ApiBearerAuth()
   @Post('run')
-  @ApiOperation({ summary: '按规则执行一轮筛选' })
-  run(@Body() dto: RunScreeningDto) {
-    return this.screeningService.run(dto);
+  @ApiOperation({ summary: '按规则执行一轮筛选（按店铺隔离）' })
+  run(@Body() dto: RunScreeningDto, @CurrentUser() user: any, @Query('storeId') storeId?: string) {
+    return this.screeningService.run(dto, user, storeId);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get('runs')
-  @ApiOperation({ summary: '筛选批次列表' })
-  listRuns(@Query() query: QueryRunDto) {
-    return this.screeningService.listRuns(query);
+  @ApiOperation({ summary: '筛选批次列表（按店铺隔离）' })
+  listRuns(@Query() query: QueryRunDto, @CurrentUser() user: any) {
+    return this.screeningService.listRuns(query, user);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get('runs/:id')
   @ApiOperation({ summary: '筛选结果明细' })
-  runDetail(@Param('id', ParseIntPipe) id: number, @Query() query: QueryRunDto) {
-    return this.screeningService.runDetail(id, query);
+  runDetail(@Param('id', ParseIntPipe) id: number, @Query() query: QueryRunDto, @CurrentUser() user: any) {
+    return this.screeningService.runDetail(id, query, user);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get('runs/:id/export')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   @ApiOperation({ summary: '导出筛选结果 CSV' })
-  async export(@Param('id', ParseIntPipe) id: number, @Query('grade') grade: string, @Res() res: Response) {
-    const csv = await this.screeningService.exportCsv(id, grade);
+  async export(@Param('id', ParseIntPipe) id: number, @Query('grade') grade: string, @CurrentUser() user: any, @Res() res: Response) {
+    const csv = await this.screeningService.exportCsv(id, grade, user);
     res.setHeader('Content-Disposition', `attachment; filename="screening_${id}.csv"`);
     res.send(csv);
   }

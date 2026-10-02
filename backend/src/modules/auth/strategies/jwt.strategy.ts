@@ -26,6 +26,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       username: user.username,
       nickname: user.nickname,
       role: user.role,
+      // 所属店铺：决定该账号能看到哪个店铺的数据（超管为 null，表示看全部）
+      storeId: user.storeId ?? null,
+      storeName: user.store?.name ?? null,
       // 最终生效的页面权限：超管全量 > 角色权限 > 个人权限；前端菜单与路由守卫按它过滤
       permissions: resolvePermissions(user),
     };

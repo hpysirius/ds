@@ -27,6 +27,7 @@ export const PERMISSIONS: PermissionOption[] = [
   { key: 'pricing_records', label: '定价记录', group: '定价' },
   { key: 'system_users', label: '员工账号管理', group: '系统' },
   { key: 'system_roles', label: '角色管理', group: '系统' },
+  { key: 'system_stores', label: '店铺管理', group: '系统' },
 ];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
@@ -62,4 +63,41 @@ export function resolvePermissions(user: any): string[] {
   if (user.role === SUPER_ADMIN_ROLE) return [...PERMISSION_KEYS];
   if (user.roleRef) return parsePermissions(user.roleRef.permissions);
   return parsePermissions(user.permissions);
+}
+
+/**
+ * 店铺数据隔离：把「当前登录用户 + 前端传来的 storeId（仅超管可指定）」翻译成 Prisma 的
+ * where.storeId 过滤条件。
+ *
+ * 规则：
+ *   - 没有 user（匿名 / 插件 @Public 接口）：不过滤，返回 {}（插件上报的商品归属 null）
+ *   - 超级管理员：若前端传了具体 storeId → 只看该店；否则（不选 / "全部"）→ 看全部 {}
+ *   - 普通员工：固定只看自己所属店铺；未分配店铺 → storeId=-1（不可能命中，等效无数据）
+ */
+export function storeWhereClause(user: any, reqStoreId?: number | string | null): any {
+  if (!user) return {};
+  if (user.role === SUPER_ADMIN_ROLE) {
+    const n = toInt(reqStoreId);
+    if (n != null) return { storeId: n };
+    return {};
+  }
+  return { storeId: user.storeId ?? -1 };
+}
+
+/**
+ * 创建数据时应该写入的 storeId：
+ *   - 匿名（插件）：null（归属未分配，仅在超管"全部"视图可见）
+ *   - 超管：用前端指定的 storeId；未指定 → null
+ *   - 普通员工：固定写自己的 storeId
+ */
+export function currentStoreId(user: any, reqStoreId?: number | string | null): number | null {
+  if (!user) return null;
+  if (user.role === SUPER_ADMIN_ROLE) return toInt(reqStoreId) ?? null;
+  return user.storeId ?? null;
+}
+
+function toInt(v: number | string | null | undefined): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }

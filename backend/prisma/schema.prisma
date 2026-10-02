@@ -23,6 +23,8 @@ model User {
   permissions String?   @db.Text
   /// 所属角色（页面权限主要由它决定）
   roleId      Int?
+  /// 所属店铺：员工挂在某个店铺下，数据按店铺隔离；超管/未分配为 null（超管看全部）
+  storeId     Int?
   lastLoginAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -31,9 +33,31 @@ model User {
   presets FilterPreset[]
   /// 注意：字段名不能叫 role，User.role 已经是角色字符串列
   roleRef Role?        @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  store   Store?       @relation(fields: [storeId], references: [id], onDelete: SetNull)
 
   @@index([roleId])
+  @@index([storeId])
   @@map("users")
+}
+
+// ============ 店铺（多租户隔离单元）============
+model Store {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(80) // 店铺名，如「莫斯科一号店」
+  code      String?  @unique @db.VarChar(40) // 店铺编码，可空、唯一
+  remark    String?  @db.VarChar(200)
+  status    Int      @default(1) // 1 启用 0 停用
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users          User[]
+  collectTasks   CollectTask[]
+  products       Product[]
+  pricingRecords PricingRecord[]
+  filterPresets  FilterPreset[]
+  screeningRuns  ScreeningRun[]
+
+  @@map("stores")
 }
 
 // ============ 角色 ============
@@ -66,14 +90,17 @@ model CollectTask {
   startedAt  DateTime?
   finishedAt DateTime?
   userId     Int?
+  storeId    Int?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
   user    User?           @relation(fields: [userId], references: [id])
+  store   Store?          @relation(fields: [storeId], references: [id], onDelete: SetNull)
   metrics ProductMetric[]
   runs    ScreeningRun[]
 
   @@index([status])
+  @@index([storeId])
   @@index([createdAt])
   @@map("collect_tasks")
 }
@@ -122,13 +149,16 @@ model Product {
   raw         Json? // 插件返回的完整原始数据
   firstSeenAt DateTime @default(now())
   lastSeenAt  DateTime @default(now())
+  storeId     Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  store         Store?          @relation(fields: [storeId], references: [id], onDelete: SetNull)
   metrics        ProductMetric[]
   screeningItems ScreeningItem[]
 
   @@index([category3Name])
+  @@index([storeId])
   @@index([soldCount])
   @@index([createDays])
   @@index([lastSeenAt])
@@ -168,12 +198,15 @@ model FilterPreset {
   isDefault   Boolean  @default(false)
   rules       Json // 阈值集合，见 src/modules/screening/rules.ts
   userId      Int?
+  storeId     Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   user User?          @relation(fields: [userId], references: [id])
+  store Store?        @relation(fields: [storeId], references: [id], onDelete: SetNull)
   runs ScreeningRun[]
 
+  @@index([storeId])
   @@map("filter_presets")
 }
 
@@ -182,6 +215,7 @@ model ScreeningRun {
   id         Int      @id @default(autoincrement())
   presetId   Int?
   taskId     Int?
+  storeId    Int?
   presetName String   @db.VarChar(100)
   rules      Json
   total      Int      @default(0) // 参与筛选的商品数
@@ -190,8 +224,10 @@ model ScreeningRun {
 
   preset FilterPreset?   @relation(fields: [presetId], references: [id])
   task   CollectTask?    @relation(fields: [taskId], references: [id])
+  store  Store?          @relation(fields: [storeId], references: [id], onDelete: SetNull)
   items  ScreeningItem[]
 
+  @@index([storeId])
   @@index([createdAt])
   @@map("screening_runs")
 }
@@ -298,9 +334,13 @@ model PricingRecord {
   source     String  @default("workbench") @db.VarChar(20) // workbench / excel
 
   userId    Int?
+  storeId   Int?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  store Store? @relation(fields: [storeId], references: [id], onDelete: SetNull)
+
+  @@index([storeId])
   @@index([createdAt])
   @@index([sku])
   @@index([excelRef])

@@ -6,6 +6,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { RolesModule } from './modules/roles/roles.module';
+import { StoresModule } from './modules/stores/stores.module';
 import { BrowserModule } from './modules/browser/browser.module';
 import { CollectModule } from './modules/collect/collect.module';
 import { ProductsModule } from './modules/products/products.module';
@@ -23,6 +24,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     AuthModule,
     UsersModule,
     RolesModule,
+    StoresModule,
     BrowserModule,
     CollectModule,
     ProductsModule,

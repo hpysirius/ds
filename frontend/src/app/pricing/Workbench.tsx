@@ -25,6 +25,7 @@ import {
 } from 'antd';
 import { CopyOutlined, LinkOutlined, SaveOutlined, SearchOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { API_BASE, http, postSourcing, probeLocalApi } from '@/lib/api';
+import { useStore } from '@/lib/store-context';
 
 const COUNTRIES = [
   { value: 'RU', label: '俄罗斯' },
@@ -59,6 +60,7 @@ function localMetrics(sellPriceCny: number, cost: number, fee: number, label: nu
  * 定价工作台：选品 → 1688 以图搜款 → 抓货源（成本/重量）→ 算运费与定价 → 保存定价记录
  */
 export default function WorkbenchTab({ settings, onSaved }: { settings: any; onSaved?: () => void }) {
+  const { storeParam } = useStore();
   const [form] = Form.useForm();
 
   const [kw, setKw] = useState('');
@@ -132,7 +134,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   const searchProducts = async () => {
     setPicking(true);
     try {
-      const { data } = await http.get('/pricing/products', { params: { keyword: kw, limit: 24 } });
+      const { data } = await http.get('/pricing/products', { params: { keyword: kw, limit: 24, ...storeParam } });
       setProducts(data || []);
       setPickOpen(true);
       if (!(data || []).length) message.info('商品库里没有匹配的 SKU');
@@ -731,7 +733,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     (async () => {
       try {
         if (sku) {
-          const { data } = await http.get('/pricing/products', { params: { keyword: sku, limit: 5 } });
+          const { data } = await http.get('/pricing/products', { params: { keyword: sku, limit: 5, ...storeParam } });
           const p = (data || []).find((x: any) => x.sku === sku) || (data || [])[0];
           if (!p) {
             message.warning(`商品库里没有 SKU ${sku}`);
@@ -818,7 +820,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
         categoryPath: all.categoryPath || null,
         offer1688Title: all.offer1688Title || null,
         weightSource: all.weightSource || null,
-      });
+      }, { params: storeParam });
       message.success('已生成到定价表');
       onSaved?.();
     } catch (e: any) {

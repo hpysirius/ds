@@ -241,6 +241,11 @@ export class QueryRecordDto {
   @IsOptional()
   @IsIn(['true', 'false', '1', '0'])
   higherThanRetail?: string;
+  @ApiPropertyOptional({ description: '按店铺筛选（仅超级管理员可指定；普通员工固定只看自己店铺）' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  storeId?: number;
 }
 
 export class UpdateSettingDto {

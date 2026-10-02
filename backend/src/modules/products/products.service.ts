@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueryProductDto } from './dto/query-product.dto';
+import { storeWhereClause } from '../../common/constants/permissions';
 
 const SORTABLE = ['lastSeenAt', 'soldCount', 'convToCartPdp', 'createDays', 'cancelRate', 'reviewsCount', 'price'];
 
@@ -30,8 +31,20 @@ export class ProductsService {
     return where;
   }
 
-  async findAll(q: QueryProductDto) {
-    const where = this.buildWhere(q);
+  /** 当前账号可访问的店铺过滤（员工只看自己店；超管按前端 storeId 过滤或看全部） */
+  private scope(user: any, storeId?: number | string | null) {
+    return storeWhereClause(user, storeId);
+  }
+
+  /** 单条记录是否在该账号可见范围内（用于删除/详情的越权保护） */
+  private inScope(user: any, storeId: number | null): boolean {
+    if (!user) return true;
+    if (user.role === 'super_admin') return true; // 超管看全部
+    return (user.storeId ?? -1) === (storeId ?? -1);
+  }
+
+  async findAll(q: QueryProductDto, user?: any) {
+    const where = { ...this.buildWhere(q), ...this.scope(user, (q as any).storeId) };
 
     const page = q.page ?? 1;
     const pageSize = Math.min(q.pageSize ?? 20, 200);
@@ -78,16 +91,18 @@ export class ProductsService {
     return { list: listWithTags, total, page, pageSize };
   }
 
-  async findOne(sku: string) {
+  async findOne(sku: string, user?: any) {
     const product = await this.prisma.product.findUnique({ where: { sku } });
     if (!product) throw new NotFoundException('商品不存在');
+    if (!this.inScope(user, product.storeId ?? null)) throw new NotFoundException('商品不存在');
     return product;
   }
 
   /** 指标历史：看清一个品的月销/加购率变化趋势 */
-  async history(sku: string) {
+  async history(sku: string, user?: any) {
     const product = await this.prisma.product.findUnique({ where: { sku } });
     if (!product) throw new NotFoundException('商品不存在');
+    if (!this.inScope(user, product.storeId ?? null)) throw new NotFoundException('商品不存在');
     const metrics = await this.prisma.productMetric.findMany({
       where: { productId: product.id },
       orderBy: { capturedAt: 'asc' },
@@ -96,9 +111,10 @@ export class ProductsService {
     return { product, metrics };
   }
 
-  async categories() {
+  async categories(user?: any, storeId?: number | string | null) {
     const rows = await this.prisma.product.groupBy({
       by: ['category3Name'],
+      where: this.scope(user, storeId),
       _count: { _all: true },
       orderBy: { _count: { category3Name: 'desc' } },
       take: 60,
@@ -109,9 +125,10 @@ export class ProductsService {
   }
 
   /** 删除单个商品（指标历史 product_metrics 是 Cascade，跟着一起删） */
-  async remove(id: number) {
-    const p = await this.prisma.product.findUnique({ where: { id }, select: { id: true, sku: true } });
+  async remove(id: number, user?: any) {
+    const p = await this.prisma.product.findUnique({ where: { id }, select: { id: true, sku: true, storeId: true } });
     if (!p) throw new NotFoundException('商品不存在（可能已被删除）');
+    if (!this.inScope(user, p.storeId ?? null)) throw new NotFoundException('商品不存在');
     await this.prisma.product.delete({ where: { id } });
     return { ok: true, id, sku: p.sku };
   }
@@ -122,15 +139,15 @@ export class ProductsService {
    *   - 不传 ids、传 filter：按当前筛选条件删（"删除筛选结果"用）
    * 两个都不传 → 拒绝，避免一个误操作清空整库。
    */
-  async removeMany(dto: { ids?: number[]; filter?: any }) {
+  async removeMany(dto: { ids?: number[]; filter?: any; storeId?: number }, user?: any, storeId?: number | string | null) {
+    const scope = this.scope(user, storeId ?? dto?.storeId);
     const ids = (dto?.ids || []).map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0);
     if (ids.length) {
-      const r = await this.prisma.product.deleteMany({ where: { id: { in: ids } } });
+      const r = await this.prisma.product.deleteMany({ where: { id: { in: ids }, ...scope } });
       return { ok: true, deleted: r.count, mode: 'ids' };
     }
     if (dto?.filter && Object.keys(dto.filter).length) {
-      const where = this.buildWhere(dto.filter);
-      if (!Object.keys(where).length) throw new BadRequestException('没有筛选条件，拒绝整库删除');
+      const where = { ...this.buildWhere(dto.filter), ...scope };
       const r = await this.prisma.product.deleteMany({ where });
       return { ok: true, deleted: r.count, mode: 'filter' };
     }

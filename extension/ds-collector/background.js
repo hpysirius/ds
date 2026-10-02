@@ -11,16 +11,28 @@
  *      （已补上的商品会自动从待补清单里消失，所以中断后重跑天然是"断点续跑"，不会重复劳动）
  */
 import { collectProduct, probeReady, collectList, scrollDown } from './collector-lib.js';
-import { applyRulesToItem } from './rules-lib.js';
+import { applyRulesToItem, passesFilter } from './rules-lib.js';
 
 const DEFAULT_API = 'http://localhost:3101';
 const STATE_KEY = 'ds_state';
 const RULES_KEY = 'rules';
+const FILTER_KEY = 'ds_filter_mode';
 
 /** 采集规则（规则管理页维护，采集时逐条匹配给商品打标签） */
 async function getRules() {
   const s = await chrome.storage.local.get([RULES_KEY]);
   return Array.isArray(s[RULES_KEY]) ? s[RULES_KEY] : [];
+}
+
+/**
+ * 过滤模式开关（popup「过滤模式」复选框，存 chrome.storage.local）：
+ *   开 → 采集时只保留「命中带条件规则」的商品，未命中的直接丢弃、不上报；
+ *   关 → 行为跟以前完全一致：全部采集入库，仅给命中的商品打标签。
+ * 默认关（保持向后兼容）。
+ */
+async function getFilterMode() {
+  const s = await chrome.storage.local.get([FILTER_KEY]);
+  return !!s[FILTER_KEY];
 }
 
 /** 给单个商品按规则打标签（命中才加 item.tags，永远不覆盖已有标签） */
@@ -406,6 +418,11 @@ async function collectActiveTab() {
   }
   const payload = { ...data, sku };
   await tagItem(payload);
+  // 过滤模式：单个商品页采集也遵守 —— 未命中带条件规则的直接跳过、不上报
+  if (await getFilterMode() && !passesFilter(payload, await getRules())) {
+    await log(`🎯 过滤模式：${sku} 未命中规则，已跳过不上报`);
+    return { ok: false, reason: '过滤模式：该商品未命中任何规则条件' };
+  }
   if (payload.tags && payload.tags.length) {
     await log(`🏷 命中规则：${payload.tags.map((t) => t.name).join('、')}`);
   }
@@ -484,10 +501,33 @@ async function collectListPage(scrolls) {
     }
   }
 
-  const items = [...seen.values()].filter((it) => it.title || it.price || it.imageUrl);
+  const rawItems = [...seen.values()].filter((it) => it.title || it.price || it.imageUrl);
   // 一个都没抓到：直接把中断原因抛出去（比"没抓到任何商品卡片"有用得多）
-  if (!items.length) {
+  if (!rawItems.length) {
     throw new Error(aborted || '没抓到任何商品卡片（页面加载完了吗？）');
+  }
+
+  /*
+   * 过滤模式：开启后只保留「命中任意一条带条件规则」的商品，未命中的直接丢弃、不上报。
+   * 这是「采集规则」真正当过滤器用的地方 —— 关掉时行为与以前完全一致（全部采集 + 打标签）。
+   * 未命中「无条件规则」的商品也会被丢弃；若一条带条件的规则都没有，则全部放行。
+   */
+  const filterOn = await getFilterMode();
+  let items = rawItems;
+  let filteredOut = 0;
+  if (filterOn) {
+    const rules = await getRules();
+    items = rawItems.filter((it) => passesFilter(it, rules));
+    filteredOut = rawItems.length - items.length;
+    await log(
+      filteredOut
+        ? `🎯 过滤模式：命中规则 ${items.length}/${rawItems.length}，丢弃未命中 ${filteredOut} 个`
+        : `🎯 过滤模式：${rawItems.length} 个商品全部命中规则`,
+    );
+  }
+  if (!items.length) {
+    await log('⚠️ 过滤模式下没有任何商品命中规则：请检查规则条件是否太严（列表页读不到的字段，如评论数，会判为不命中而被过滤）');
+    return { created: 0, updated: 0, skipped: 0, total: 0, filtered: filteredOut, aborted: aborted || '', coverage: { title: 0, price: 0, image: 0, reviews: 0, card: 0 } };
   }
 
   /*
@@ -520,9 +560,11 @@ async function collectListPage(scrolls) {
 
   const r = await ingestListChunked(tab.url, items);
   await log(
-    `✅ 列表采集${aborted ? '未跑完，已上传已抓到的部分' : '完成'}：抓到 ${items.length} 个 → 新建 ${r.created} / 更新 ${r.updated}`,
+    `✅ 列表采集${aborted ? '未跑完，已上传已抓到的部分' : '完成'}：${
+      filteredOut ? `命中规则 ${items.length} 个（过滤掉未命中 ${filteredOut} 个）` : `抓到 ${items.length} 个`
+    } → 新建 ${r.created} / 更新 ${r.updated}`,
   );
-  return { ...r, aborted: aborted || '', coverage: cov };
+  return { ...r, aborted: aborted || '', coverage: cov, filtered: filteredOut };
 }
 
 async function runBatch(limit) {

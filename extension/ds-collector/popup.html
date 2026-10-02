@@ -103,6 +103,10 @@
         <button id="collect" style="flex:1">采集当前商品页</button>
       </div>
 
+      <label class="ck" style="margin-bottom:6px" title="开：采集时只保留命中规则的商品，未命中的直接丢弃、不入库；关：全部采集入库，仅给命中的商品打标签">
+        <input id="filterMode" type="checkbox" /> 过滤模式（只采集命中规则的商品）
+      </label>
+
       <div class="row">
         <button id="collectList" class="primary" style="flex:1">采集当前列表页</button>
         <input id="scrolls" type="number" value="3" min="0" max="30" title="往下滚几屏（每屏约 36 个商品）" style="max-width:56px" />

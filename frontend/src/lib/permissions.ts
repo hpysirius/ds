@@ -24,6 +24,7 @@ export const PERMISSIONS: PermissionOption[] = [
   { key: 'pricing_records', label: '定价记录', path: '/pricing/records', group: '定价' },
   { key: 'system_users', label: '员工账号管理', path: '/system/users', group: '系统' },
   { key: 'system_roles', label: '角色管理', path: '/system/roles', group: '系统' },
+  { key: 'system_stores', label: '店铺管理', path: '/system/stores', group: '系统' },
 ];
 
 /** 路由 → 权限 key（路由守卫用） */

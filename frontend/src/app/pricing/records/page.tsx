@@ -28,8 +28,10 @@ import {
 import { DownloadOutlined, ImportOutlined, ReloadOutlined } from '@ant-design/icons';
 import { API_BASE, http } from '@/lib/api';
 import { COUNTRIES, VENDORS, pct, money } from '../constants';
+import { useStore } from '@/lib/store-context';
 
 export default function PricingRecords() {
+  const { storeParam } = useStore();
   const [list, setList] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -58,6 +60,7 @@ export default function PricingRecords() {
     if (keyword) params.set('keyword', keyword);
     if (listedFilter !== 'all') params.set('listed', listedFilter === 'yes' ? 'true' : 'false');
     if (higherFilter !== 'all') params.set('higherThanRetail', higherFilter === 'yes' ? 'true' : 'false');
+    if (storeParam.storeId != null) params.set('storeId', String(storeParam.storeId));
     const qs = params.toString();
     return `${API_BASE}/pricing/records/export${qs ? `?${qs}` : ''}`;
   })();
@@ -93,11 +96,12 @@ export default function PricingRecords() {
         keyword: keyword || undefined,
         listed: listedFilter === 'all' ? undefined : listedFilter === 'yes',
         higherThanRetail: higherFilter === 'all' ? undefined : higherFilter === 'yes',
+        ...storeParam,
       },
     });
     setList(data.list);
     setTotal(data.total);
-  }, [page, keyword, listedFilter, higherFilter]);
+  }, [page, keyword, listedFilter, higherFilter, storeParam]);
 
   useEffect(() => {
     load().catch((e) => message.error(e.message));

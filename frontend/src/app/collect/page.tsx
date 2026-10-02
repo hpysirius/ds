@@ -21,6 +21,7 @@ import {
 } from 'antd';
 import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { http, PRESETS } from '@/lib/api';
+import { useStore } from '@/lib/store-context';
 
 const STATUS_MAP: Record<string, { color: string; text: string }> = {
   pending: { color: 'default', text: '排队中' },
@@ -30,6 +31,7 @@ const STATUS_MAP: Record<string, { color: string; text: string }> = {
 };
 
 export default function CollectPage() {
+  const { storeParam } = useStore();
   const [browser, setBrowser] = useState<any>(null);
   const [starting, setStarting] = useState(false);
   const [tasks, setTasks] = useState<any[]>([]);
@@ -50,7 +52,7 @@ export default function CollectPage() {
 
   const loadTasks = async (p = page) => {
     try {
-      const { data } = await http.get('/collect/tasks', { params: { page: p, pageSize: 10 } });
+      const { data } = await http.get('/collect/tasks', { params: { page: p, pageSize: 10, ...storeParam } });
       setTasks(data.list);
       setTotal(data.total);
     } catch (e: any) {
@@ -68,7 +70,7 @@ export default function CollectPage() {
     }, 4000);
     return () => clearInterval(timer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [storeParam]);
 
   useEffect(() => {
     if (!detail?.id) return;
@@ -99,7 +101,7 @@ export default function CollectPage() {
     const values = await form.validateFields();
     setCreating(true);
     try {
-      await http.post('/collect/tasks', values);
+      await http.post('/collect/tasks', values, { params: storeParam });
       message.success('采集任务已创建，正在后台执行');
       loadTasks(1);
       setPage(1);

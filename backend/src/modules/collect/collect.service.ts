@@ -5,6 +5,7 @@ import { BrowserService } from '../browser/browser.service';
 import { CdpClient, sleep } from './lib/cdp.client';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { QueryTaskDto } from './dto/query-task.dto';
+import { storeWhereClause } from '../../common/constants/permissions';
 
 /** 从插件注入的属性里读商品数据的 JS 片段 */
 const GRAB_JS = "JSON.stringify([].slice.call(document.querySelectorAll('[data-s2-card-data-json]')).map(function(e){try{var d=JSON.parse(e.getAttribute('data-s2-card-data-json'));var p=e,url='',name='';for(var i=0;i<10&&p;i++){var as=p.querySelectorAll?p.querySelectorAll('a[href*=\"/product/\"]'):[];var best=null;for(var k=0;k<as.length;k++){var tx=((as[k].getAttribute('aria-label')||as[k].innerText||'')+'').trim();if(!best||tx.length>best.length)best=tx;if(!url)url=as[k].href||''}if(best)name=best;if(url)break;p=p.parentElement}var q=e,img=null;for(var j=0;j<10&&q;j++){img=q.querySelector?q.querySelector('img[alt]'):null;if(img)break;q=q.parentElement}var alt=img?(img.getAttribute('alt')||'').trim():'';if(alt.length>12&&alt.length>(name||'').length)name=alt;d.__title=name||'';d.__url=url||'';try{if(!d.imageUrl&&img){var cand=img.getAttribute('srcset')||img.getAttribute('data-src')||img.getAttribute('src')||'';var first=cand?cand.split(',')[0].trim().split(' ')[0]:'';if(first&&/^https?:\\/\\//.test(first)===false&&first.indexOf('//')===0)first='https:'+first;if(first&&/^https?:\\/\\//i.test(first)&&!/chrome-extension:|data:|blob:/i.test(first)){d.__image=first}}}catch(e2){}return d}catch(err){return null}}).filter(Boolean))";
@@ -35,7 +36,7 @@ export class CollectService implements OnModuleInit {
     private readonly browser: BrowserService,
   ) {}
 
-  async createTask(dto: CreateTaskDto, userId?: number) {
+  async createTask(dto: CreateTaskDto, userId?: number, storeId?: number | null) {
     const task = await this.prisma.collectTask.create({
       data: {
         name: dto.name || '采集 ' + new Date().toLocaleString('zh-CN'),
@@ -43,6 +44,7 @@ export class CollectService implements OnModuleInit {
         scrolls: dto.scrolls ?? 20,
         step: dto.step ?? 900,
         userId: userId ?? null,
+        storeId: storeId ?? null,
         status: 'pending',
       },
     });
@@ -51,8 +53,8 @@ export class CollectService implements OnModuleInit {
     return task;
   }
 
-  async findAll(query: QueryTaskDto) {
-    const where: any = {};
+  async findAll(query: QueryTaskDto, user?: any) {
+    const where: any = { ...storeWhereClause(user, (query as any).storeId) };
     if (query.status) where.status = query.status;
     const [list, total] = await Promise.all([
       this.prisma.collectTask.findMany({
@@ -66,14 +68,24 @@ export class CollectService implements OnModuleInit {
     return { list, total, page: query.page ?? 1, pageSize: query.pageSize ?? 20 };
   }
 
-  async findOne(id: number) {
+  private inScope(user: any, storeId: number | null): boolean {
+    if (!user) return true;
+    if (user.role === 'super_admin') return true;
+    return (user.storeId ?? -1) === (storeId ?? -1);
+  }
+
+  async findOne(id: number, user?: any) {
     const task = await this.prisma.collectTask.findUnique({ where: { id } });
     if (!task) throw new NotFoundException('采集任务不存在');
+    if (!this.inScope(user, task.storeId ?? null)) throw new NotFoundException('采集任务不存在');
     const metrics = await this.prisma.productMetric.count({ where: { taskId: id } });
     return { ...task, productCount: metrics, isRunning: this.running.has(id) };
   }
 
-  async remove(id: number) {
+  async remove(id: number, user?: any) {
+    const task = await this.prisma.collectTask.findUnique({ where: { id } });
+    if (!task) throw new NotFoundException('采集任务不存在');
+    if (!this.inScope(user, task.storeId ?? null)) throw new NotFoundException('采集任务不存在');
     await this.prisma.productMetric.deleteMany({ where: { taskId: id } });
     await this.prisma.collectTask.delete({ where: { id } });
     return { id };
@@ -333,7 +345,7 @@ export class CollectService implements OnModuleInit {
 
       const items = [...collected.values()];
       await this.appendLog(taskId, `滚动结束，开始入库 ${items.length} 条`);
-      const saved = await this.persist(taskId, items);
+      const saved = await this.persist(taskId, items, task.storeId);
 
       await this.prisma.collectTask.update({
         where: { id: taskId },
@@ -366,7 +378,7 @@ export class CollectService implements OnModuleInit {
   }
 
   /** 商品 upsert + 指标历史落库 */
-  private async persist(taskId: number, items: any[]) {
+  private async persist(taskId: number, items: any[], storeId?: number | null) {
     let count = 0;
     for (const it of items) {
       const sku = String(it.sku);
@@ -378,7 +390,7 @@ export class CollectService implements OnModuleInit {
             ? str(it.images)
             : null;
 
-      const data = {
+      const data: any = {
         title: str(it.__title || it.title),
         brand: str(it.brand),
         categoryPath: str(it.category),
@@ -411,6 +423,8 @@ export class CollectService implements OnModuleInit {
         raw: it,
         lastSeenAt: new Date(),
       };
+      // 商品归属店铺：采集任务带 storeId 则落到该店铺；否则保持（storeless 归"全部"视图）
+      if (storeId != null) data.storeId = storeId;
 
       const product = await this.prisma.product.upsert({
         where: { sku },
@@ -418,8 +432,13 @@ export class CollectService implements OnModuleInit {
         /*
          * 关键：update 时如果这次没抓到真图，就**不要把 imageUrl 传进去**（传 null 会把上次的好图覆盖掉，
          * 之前就是这么把 53 个商品的图搞没的）。Prisma 里字段为 undefined 表示"不更新这一列"。
+         * storeId 同理：已有归属则保留，避免被 storeless 任务覆盖。
          */
-        update: { ...data, imageUrl: incomingImage ? incomingImage : undefined },
+        update: {
+          ...data,
+          imageUrl: incomingImage ? incomingImage : undefined,
+          storeId: storeId != null ? storeId : undefined,
+        },
       });
 
       await this.prisma.productMetric.create({

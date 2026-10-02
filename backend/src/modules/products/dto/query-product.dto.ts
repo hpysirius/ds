@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class QueryProductDto {
@@ -76,4 +77,10 @@ export class QueryProductDto {
   @IsOptional()
   @IsIn(['asc', 'desc'])
   order?: 'asc' | 'desc';
+
+  @ApiProperty({ required: false, description: '按店铺隔离（超管可指定店铺，不传看全部）' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  storeId?: number;
 }

@@ -2,46 +2,46 @@ import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query } from 
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ProductsService } from './products.service';
 import { QueryProductDto } from './dto/query-product.dto';
-import { Public } from '../../common/decorators/public.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @ApiTags('商品库')
 @Controller('products')
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
-  @Public()
+  @ApiBearerAuth()
   @Get()
-  @ApiOperation({ summary: '商品列表（多条件筛选）' })
-  findAll(@Query() query: QueryProductDto) {
-    return this.productsService.findAll(query);
+  @ApiOperation({ summary: '商品列表（多条件筛选，按店铺隔离）' })
+  findAll(@Query() query: QueryProductDto, @CurrentUser() user: any) {
+    return this.productsService.findAll(query, user);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get('categories')
-  @ApiOperation({ summary: '类目分布' })
-  categories() {
-    return this.productsService.categories();
+  @ApiOperation({ summary: '类目分布（按店铺隔离）' })
+  categories(@CurrentUser() user: any, @Query('storeId') storeId?: string) {
+    return this.productsService.categories(user, storeId);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get(':sku/history')
   @ApiOperation({ summary: '商品指标历史' })
-  history(@Param('sku') sku: string) {
-    return this.productsService.history(sku);
+  history(@Param('sku') sku: string, @CurrentUser() user: any) {
+    return this.productsService.history(sku, user);
   }
 
-  @Public()
+  @ApiBearerAuth()
   @Get(':sku')
   @ApiOperation({ summary: '商品详情' })
-  findOne(@Param('sku') sku: string) {
-    return this.productsService.findOne(sku);
+  findOne(@Param('sku') sku: string, @CurrentUser() user: any) {
+    return this.productsService.findOne(sku, user);
   }
 
   @ApiBearerAuth()
   @Delete(':id')
   @ApiOperation({ summary: '删除商品' })
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.productsService.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+    return this.productsService.remove(id, user);
   }
 
   /**
@@ -52,7 +52,7 @@ export class ProductsController {
   @ApiBearerAuth()
   @Post('bulk-delete')
   @ApiOperation({ summary: '批量删除商品（按 id 或按筛选条件）' })
-  removeMany(@Body() dto: { ids?: number[]; filter?: any }) {
-    return this.productsService.removeMany(dto || {});
+  removeMany(@Body() dto: { ids?: number[]; filter?: any; storeId?: number }, @CurrentUser() user: any, @Query('storeId') storeId?: string) {
+    return this.productsService.removeMany(dto || {}, user, storeId);
   }
 }

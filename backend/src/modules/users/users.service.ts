@@ -20,12 +20,14 @@ export class UsersService {
    */
   private toDto(user: any) {
     if (!user) return user;
-    const { password, permissions, roleRef, ...rest } = user;
+    const { password, permissions, roleRef, store, ...rest } = user;
     return {
       ...rest,
       permissions: resolvePermissions(user),
       roleId: rest.roleId ?? null,
       roleName: roleRef?.name ?? null,
+      storeId: rest.storeId ?? null,
+      storeName: store?.name ?? null,
     };
   }
 
@@ -42,14 +44,15 @@ export class UsersService {
         permissions: serializePermissions(dto.permissions ?? []),
         status: dto.status ?? 1,
         ...(dto.roleId !== undefined ? { roleId: dto.roleId } : {}),
+        ...(dto.storeId !== undefined ? { storeId: dto.storeId || null } : {}),
       },
-      include: { roleRef: true },
+      include: { roleRef: true, store: true },
     });
     return this.toDto(user);
   }
 
   async findAll() {
-    const users = await this.prisma.user.findMany({ orderBy: { id: 'asc' }, include: { roleRef: true } });
+    const users = await this.prisma.user.findMany({ orderBy: { id: 'asc' }, include: { roleRef: true, store: true } });
     return users.map((u) => this.toDto(u));
   }
 
@@ -59,12 +62,12 @@ export class UsersService {
 
   /** 带角色一起查（登录校验 / profile 需要用它才能解析出角色权限） */
   async findByIdWithRole(id: number) {
-    return this.prisma.user.findUnique({ where: { id }, include: { roleRef: true } });
+    return this.prisma.user.findUnique({ where: { id }, include: { roleRef: true, store: true } });
   }
 
   async findByUsername(username: string) {
     // 带上角色：登录时要按角色解析出最终页面权限
-    return this.prisma.user.findUnique({ where: { username }, include: { roleRef: true } });
+    return this.prisma.user.findUnique({ where: { username }, include: { roleRef: true, store: true } });
   }
 
   /**
@@ -93,8 +96,9 @@ export class UsersService {
     if (dto.password) data.password = await bcrypt.hash(dto.password, 10);
     if (dto.permissions !== undefined) data.permissions = serializePermissions(dto.permissions);
     if (dto.roleId !== undefined) data.roleId = dto.roleId;
+    if (dto.storeId !== undefined) data.storeId = dto.storeId || null;
 
-    const user = await this.prisma.user.update({ where: { id }, data, include: { roleRef: true } });
+    const user = await this.prisma.user.update({ where: { id }, data, include: { roleRef: true, store: true } });
     return this.toDto(user);
   }
 

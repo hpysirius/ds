@@ -30,6 +30,7 @@ import {
   UpdateSettingDto,
   UpsertChannelDto,
 } from './dto/pricing.dto';
+import { currentStoreId, storeWhereClause } from '../../common/constants/permissions';
 
 const num = (v: any): number => {
   if (v == null) return 0;
@@ -453,8 +454,8 @@ export class PricingService {
     };
   }
 
-  /** 商品库检索：供定价工作台选品 */
-  async searchProducts(keyword: string, limit = 20) {
+  /** 商品库检索：供定价工作台选品（按店铺隔离） */
+  async searchProducts(keyword: string, limit = 20, user?: any, storeId?: number | string | null) {
     const kw = (keyword || '').trim();
     const where: any = kw
       ? {
@@ -465,6 +466,7 @@ export class PricingService {
           ],
         }
       : {};
+    Object.assign(where, storeWhereClause(user, storeId));
     const rows = await this.prisma.product.findMany({
       where,
       orderBy: { lastSeenAt: 'desc' },
@@ -500,10 +502,10 @@ export class PricingService {
   }
 
   // ==================== 定价记录 ====================
-  async listRecords(query: QueryRecordDto = {}) {
+  async listRecords(query: QueryRecordDto = {}, user?: any) {
     const page = query.page && query.page > 0 ? query.page : 1;
     const pageSize = query.pageSize && query.pageSize > 0 ? query.pageSize : 20;
-    const where: any = {};
+    const where: any = { ...storeWhereClause(user, (query as any).storeId) };
     if (query.keyword) {
       where.OR = [
         { name: { contains: query.keyword } },
@@ -543,7 +545,7 @@ export class PricingService {
     const cardMap = new Map<string, any>();
     if (idSet.size) {
       const prods = await this.prisma.product.findMany({
-        where: { sku: { in: Array.from(idSet) } },
+        where: { sku: { in: Array.from(idSet) }, ...storeWhereClause(user) },
         select: { sku: true, price: true, raw: true },
       });
       for (const p of prods) {
@@ -640,7 +642,7 @@ export class PricingService {
     };
   }
 
-  async createRecord(dto: CreateRecordDto, userId?: number) {
+  async createRecord(dto: CreateRecordDto, userId?: number, storeId?: number | null) {
     const s = await this.getSettings();
     const base: any = {
       name: dto.name ?? null,
@@ -681,13 +683,14 @@ export class PricingService {
       listed: dto.listed === true,
       listedAt: dto.listed === true ? new Date() : null,
       userId: userId ?? null,
+      storeId: storeId ?? null,
     };
     const data = this.recompute(base);
     const row = await this.prisma.pricingRecord.create({ data });
-    // 1688 货源链接回写到商品库：下次选品/核价自动带出，不用再粘一遍
+    // 1688 货源链接回写到商品库：下次选品/核价自动带出，不用再粘一遍（按 sku，限定本店铺）
     if (dto.sku && dto.supplyUrl) {
       await this.prisma.product
-        .updateMany({ where: { sku: dto.sku }, data: { supplyUrl: dto.supplyUrl } })
+        .updateMany({ where: { sku: dto.sku, ...(storeId ? { storeId } : {}) }, data: { supplyUrl: dto.supplyUrl } })
         .catch(() => undefined);
     }
     return this.fmtRecord(row);
@@ -836,6 +839,7 @@ export class PricingService {
     'excelRef',
     'listed',
     'listedAt',
+    'storeId',
   ];
 
   private pickRecordFields(src: any) {
@@ -844,9 +848,17 @@ export class PricingService {
     return out;
   }
 
-  async updateRecord(id: number, dto: UpdateRecordDto) {
+  /** 单条记录是否在该账号可见范围内（越权保护） */
+  private inScope(user: any, storeId: number | null): boolean {
+    if (!user) return true;
+    if (user.role === 'super_admin') return true;
+    return (user.storeId ?? -1) === (storeId ?? -1);
+  }
+
+  async updateRecord(id: number, dto: UpdateRecordDto, user?: any) {
     const exists = await this.prisma.pricingRecord.findUnique({ where: { id } });
     if (!exists) throw new NotFoundException('核价记录不存在');
+    if (!this.inScope(user, exists.storeId ?? null)) throw new NotFoundException('核价记录不存在');
     const merged: any = { ...this.fmtRecord(exists) };
     for (const [k, v] of Object.entries(dto)) {
       if (v !== undefined) merged[k] = v;
@@ -860,7 +872,7 @@ export class PricingService {
     // 编辑时改了货源链接也同步回商品库
     if (exists.sku && dto.supplyUrl) {
       await this.prisma.product
-        .updateMany({ where: { sku: exists.sku }, data: { supplyUrl: dto.supplyUrl } })
+        .updateMany({ where: { sku: exists.sku, ...(exists.storeId ? { storeId: exists.storeId } : {}) }, data: { supplyUrl: dto.supplyUrl } })
         .catch(() => undefined);
     }
     return this.fmtRecord(row);
@@ -870,43 +882,45 @@ export class PricingService {
    * 上架 / 下架（支持批量）。
    * 上架：listed = true 并记 listedAt（已经是已上架的不刷新时间）；下架：listed = false 并清 listedAt。
    */
-  async setListing(ids: number[], listed: boolean) {
+  async setListing(ids: number[], listed: boolean, user?: any) {
     const list = (Array.isArray(ids) ? ids : [])
       .map((n) => Number(n))
       .filter((n) => Number.isInteger(n) && n > 0);
     if (!list.length) throw new BadRequestException('请先选择要上架/下架的记录');
 
+    const scope = storeWhereClause(user);
     const now = new Date();
     if (listed) {
       await this.prisma.pricingRecord.updateMany({
-        where: { id: { in: list }, listed: false },
+        where: { id: { in: list }, listed: false, ...scope },
         data: { listed: true, listedAt: now },
       });
       // 历史数据里已上架但没时间的，补一个
       await this.prisma.pricingRecord.updateMany({
-        where: { id: { in: list }, listed: true, listedAt: null },
+        where: { id: { in: list }, listed: true, listedAt: null, ...scope },
         data: { listedAt: now },
       });
     } else {
       await this.prisma.pricingRecord.updateMany({
-        where: { id: { in: list } },
+        where: { id: { in: list }, ...scope },
         data: { listed: false, listedAt: null },
       });
     }
-    const count = await this.prisma.pricingRecord.count({ where: { id: { in: list }, listed } });
+    const count = await this.prisma.pricingRecord.count({ where: { id: { in: list }, listed, ...scope } });
     return { ids: list, listed, count };
   }
 
-  async removeRecord(id: number) {
+  async removeRecord(id: number, user?: any) {
     const exists = await this.prisma.pricingRecord.findUnique({ where: { id } });
     if (!exists) throw new NotFoundException('核价记录不存在');
+    if (!this.inScope(user, exists.storeId ?? null)) throw new NotFoundException('核价记录不存在');
     await this.prisma.pricingRecord.delete({ where: { id } });
     return { id };
   }
 
-  /** 导出成与《定价表模版》列头一致的 CSV */
-  async exportCsv(query: QueryRecordDto = {}) {
-    const { list } = await this.listRecords({ ...query, pageSize: 100000 });
+  /** 导出成与《定价表模版》列头一致的 CSV（按店铺隔离） */
+  async exportCsv(query: QueryRecordDto = {}, user?: any) {
+    const { list } = await this.listRecords({ ...query, pageSize: 100000 }, user);
     const head = [
       '序号',
       '加35%',
@@ -984,9 +998,11 @@ export class PricingService {
     return `\uFEFF${lines.join('\n')}`;
   }
 
-  /** 从商品库带出重量/尺寸/价格，供核价页一键填充 */
-  async fromProduct(sku: string) {
-    const p = await this.prisma.product.findUnique({ where: { sku } });
+  /** 从商品库带出重量/尺寸/价格，供核价页一键填充（按店铺隔离） */
+  async fromProduct(sku: string, user?: any) {
+    const where: any = { sku };
+    Object.assign(where, storeWhereClause(user));
+    const p = await this.prisma.product.findUnique({ where });
     if (!p) throw new NotFoundException('商品库里没有这个 SKU');
     return {
       sku: p.sku,

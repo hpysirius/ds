@@ -16,4 +16,9 @@ export class QueryRunDto {
   @IsOptional()
   @IsInt()
   pageSize?: number;
+
+  @ApiProperty({ required: false, description: '按店铺筛选（仅超级管理员可指定）' })
+  @IsOptional()
+  @IsInt()
+  storeId?: number;
 }

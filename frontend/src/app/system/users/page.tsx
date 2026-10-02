@@ -21,7 +21,7 @@ import {
 import { PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { http } from '@/lib/api';
-import { PERMISSIONS, ROLE_TEXT, canManageUsers } from '@/lib/permissions';
+import { PERMISSIONS, ROLE_TEXT, canManageUsers, isSuperAdmin } from '@/lib/permissions';
 
 interface PermOption {
   key: string;
@@ -39,6 +39,7 @@ export default function SystemUsersPage() {
   const [me, setMe] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
+  const [stores, setStores] = useState<any[]>([]);
   const [permOptions, setPermOptions] = useState<PermOption[]>(PERMISSIONS);
   const [loading, setLoading] = useState(true);
 
@@ -66,6 +67,18 @@ export default function SystemUsersPage() {
       setUsers(u.data || []);
       setRoles(r.data || []);
       if (Array.isArray(p.data) && p.data.length) setPermOptions(p.data);
+
+      // 店铺列表仅超级管理员可拉取（/stores 接口限定 super_admin 角色）
+      const raw = localStorage.getItem('ds_user');
+      const meLocal = raw ? JSON.parse(raw) : null;
+      if (isSuperAdmin(meLocal)) {
+        try {
+          const s = await http.get('/stores');
+          setStores(Array.isArray(s.data) ? s.data : []);
+        } catch (e) {
+          setStores([]);
+        }
+      }
     } catch (e: any) {
       message.error(e?.message || '加载失败');
     } finally {
@@ -118,7 +131,7 @@ export default function SystemUsersPage() {
     setRoleId(null);
     setPerms(['dashboard', 'products']);
     form.resetFields();
-    form.setFieldsValue({ role: 'user', status: 1, roleId: undefined });
+    form.setFieldsValue({ role: 'user', status: 1, roleId: undefined, storeId: undefined });
     setOpen(true);
   };
 
@@ -134,6 +147,7 @@ export default function SystemUsersPage() {
       role: row.role,
       status: row.status,
       roleId: row.roleId ?? undefined,
+      storeId: row.storeId ?? undefined,
       password: '',
     });
     setOpen(true);
@@ -150,6 +164,7 @@ export default function SystemUsersPage() {
         status: values.status ? 1 : 0,
         permissions: perms,
         roleId: values.roleId ?? null,
+        storeId: values.role === 'super_admin' ? null : values.storeId ?? null,
       };
       if (values.password) payload.password = values.password;
 
@@ -270,6 +285,19 @@ export default function SystemUsersPage() {
                 ),
             },
             {
+              title: '店铺',
+              dataIndex: 'storeName',
+              width: 130,
+              render: (v: string, row: any) =>
+                row.role === 'super_admin' ? (
+                  <Typography.Text type="secondary">—</Typography.Text>
+                ) : v ? (
+                  <Tag color="geekblue">{v}</Tag>
+                ) : (
+                  <Typography.Text type="secondary">未分配</Typography.Text>
+                ),
+            },
+            {
               title: '状态',
               dataIndex: 'status',
               width: 90,
@@ -384,6 +412,20 @@ export default function SystemUsersPage() {
               onChange={(v) => setRoleId(v ?? null)}
             />
           </Form.Item>
+
+          {role !== 'super_admin' && (
+            <Form.Item
+              name="storeId"
+              label="所属店铺"
+              extra="员工登录后只能看到本店铺的数据；超级管理员无需绑定店铺"
+            >
+              <Select
+                allowClear
+                placeholder="未分配"
+                options={stores.map((s) => ({ value: s.id, label: s.name }))}
+              />
+            </Form.Item>
+          )}
 
           <div style={{ marginBottom: 8 }}>
             <div style={{ fontSize: 14, marginBottom: 6 }}>页面权限</div>

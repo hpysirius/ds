@@ -5,6 +5,7 @@ import { Button, Card, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, 
 import { CalculatorOutlined, DeleteOutlined, DownloadOutlined, PictureOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { API_BASE, http } from '@/lib/api';
+import { useStore } from '@/lib/store-context';
 
 /** 标题最多显示多少字（超出省略号，鼠标悬浮看全文） */
 const TITLE_MAX = 26;
@@ -15,6 +16,7 @@ const proxyImage = (u?: string | null) =>
 
 export default function ProductsPage() {
   const router = useRouter();
+  const { storeParam } = useStore();
   const [list, setList] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -67,7 +69,7 @@ export default function ProductsPage() {
       onOk: async () => {
         setDeleting(true);
         try {
-          const { data } = await http.post('/products/bulk-delete', { ids: selected });
+          const { data } = await http.post('/products/bulk-delete', { ids: selected, ...storeParam });
           message.success(`已删除 ${data.deleted} 个商品`);
           setSelected([]);
           await load(1);
@@ -100,7 +102,7 @@ export default function ProductsPage() {
       onOk: async () => {
         setDeleting(true);
         try {
-          const { data } = await http.post('/products/bulk-delete', { filter });
+          const { data } = await http.post('/products/bulk-delete', { filter, ...storeParam });
           message.success(`已删除 ${data.deleted} 个商品`);
           setSelected([]);
           await load(1);
@@ -167,7 +169,7 @@ export default function ProductsPage() {
     setLoading(true);
     try {
       const values = form.getFieldsValue();
-      const params: any = { page: p, pageSize: s, ...values };
+      const params: any = { page: p, pageSize: s, ...values, ...storeParam };
       Object.keys(params).forEach((k) => {
         if (params[k] === undefined || params[k] === null || params[k] === '') delete params[k];
       });
@@ -194,7 +196,7 @@ export default function ProductsPage() {
 
   const loadCategories = async () => {
     try {
-      const { data } = await http.get('/products/categories');
+      const { data } = await http.get('/products/categories', { params: storeParam });
       setCategories(data.map((c: any) => ({ label: `${c.name}（${c.count}）`, value: c.name })));
     } catch (e) {
       /* ignore */
@@ -216,7 +218,7 @@ export default function ProductsPage() {
     loadCategories();
     loadRate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [storeParam]);
 
   const exportCsv = () => {
     const head = ['SKU', '标题', '类目', '品牌', '月销', '上架天', '加购%', '退货%', '评论', '广告%', '发货', '价格(₽)', '人民币(¥)', '规则标签', '链接'];

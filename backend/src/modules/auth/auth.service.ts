@@ -31,6 +31,8 @@ export class AuthService {
         username: user.username,
         nickname: user.nickname,
         role: user.role,
+        storeId: user.storeId ?? null,
+        storeName: user.store?.name ?? null,
         permissions: resolvePermissions(user),
       },
     };
