@@ -23,6 +23,7 @@
 - `http`（axios，`src/lib/api.ts`）拦截器保留 `err.response` 状态码，用来识别 401/业务 code。
 - 定价相关页面：`src/app/pricing/page.tsx`（Tab：定价记录/物流渠道/参数设置）+ `src/app/pricing/Workbench.tsx`（定价工作台，含 1688 抓取与回填）。
 - 列表操作列尽量用 `Button type="link" size="small"` + `Popconfirm` 二次确认，与既有风格一致。
+- **列表列宽可拖拽**：统一用 `components/ResizableTable.tsx` 的 `useResizableColumns(storageKey, baseColumns)` + `RESIZABLE_TABLE_COMPONENTS`（已在 `app/products/page.tsx` 落地，其他列表页照抄即可换 key）。零第三方依赖，宽度存 localStorage（`ds.colWidths.v1.*`）。
 - **多租户店铺隔离（见下节）**：任何数据页请求都要带 `storeId`（超管可切店，员工锁定本店），从 `useStore()` 取 `storeParam`。
 - **全员可见页面**：若某页要「所有登录用户都能看」而不属于业务权限，**不要**登记进 `lib/permissions.ts` 的 `PERMISSIONS`（不登记 → `ROUTE_PERMISSION` 里没有它 → 路由守卫直接放行），只在 `AppShell.tsx` 的 `menus` 里无条件 `items.push(...)`（用 `add()` 也行 —— 它的守卫是 `if (key && !perms.includes(key))`，key 为 undefined 会直接放行）。示范：`/guide`「使用说明」、`/rules`「规则标签管理」（均纯前端页 + 后端按店铺隔离）。
 - **商品图一律走同源代理**：统一用 `lib/api.ts` 的 `proxyImageUrl(u)`，**不要写 `<img src={商品图原地址}>`** —— Ozon（`ir-*.ozonstatic.cn`）/1688 的图有防盗链，直连会 403，页面只显示裂图且控制台看不出明显错误。后端代理是 `@Public` 的 `GET pricing/sourcing/image-proxy`。

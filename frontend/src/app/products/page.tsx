@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { Button, Card, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Spin, Table, Tag, Tooltip, message } from 'antd';
-import { CalculatorOutlined, DeleteOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { CalculatorOutlined, ColumnWidthOutlined, DeleteOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { http, proxyImageUrl } from '@/lib/api';
 import { useStore } from '@/lib/store-context';
 import { RuleTagChip, RuleTagDetail } from '@/components/RuleTagDetail';
+import { RESIZABLE_TABLE_COMPONENTS, useResizableColumns } from '@/components/ResizableTable';
 
 /** 标题最多显示多少字（超出省略号，鼠标悬浮看全文） */
 const TITLE_MAX = 26;
@@ -229,6 +230,165 @@ export default function ProductsPage() {
     a.click();
   };
 
+  /*
+   * 列定义单独抽出来，套一层 useResizableColumns：
+   * 鼠标拖到表头两列之间的竖线上就能改宽度，宽度存在浏览器本地，
+   * 下次打开还在（换浏览器/清缓存会回到默认）。每列的 minWidth 可单独指定。
+   */
+  const baseColumns: any[] = [
+    {
+      title: '商品',
+      dataIndex: 'title',
+      key: 'title',
+      width: 320,
+      minWidth: 200,
+      render: (t: any, r: any) => {
+        const title = String(t || '(无标题)');
+        const short = title.length > TITLE_MAX ? title.slice(0, TITLE_MAX) + '…' : title;
+        return (
+          <Space size={8} align="start">
+            {r.imageUrl ? (
+              <a href={r.productUrl} target="_blank" rel="noreferrer">
+                <img
+                  src={proxyImageUrl(r.imageUrl)}
+                  alt=""
+                  loading="lazy"
+                  style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 4, background: '#f5f5f5' }}
+                />
+              </a>
+            ) : (
+              <Tooltip title="这个商品还没抓到主图（重新采集一次即可带上，或让系统抓一次）">
+                <div
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: 4,
+                    background: '#f5f5f5',
+                    color: '#bbb',
+                    fontSize: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  无图
+                </div>
+              </Tooltip>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <Tooltip title={title}>
+                <a href={r.productUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13 }}>
+                  {short}
+                </a>
+              </Tooltip>
+              <div style={{ fontSize: 11, color: '#8c8c8c' }} className="mono">
+                {r.sku}
+              </div>
+            </div>
+          </Space>
+        );
+      },
+    },
+    { title: '类目', dataIndex: 'category3Name', width: 130, ellipsis: true },
+    { title: '品牌', dataIndex: 'brand', width: 100 },
+    {
+      title: '价格(₽/¥)',
+      dataIndex: 'price',
+      width: 110,
+      align: 'right',
+      sorter: true,
+      render: (v: any) => {
+        if (v === null || v === undefined) return '—';
+        const cny = rate > 0 ? Number(v) * rate : 0;
+        return (
+          <span className="mono">
+            {Number(v).toLocaleString('ru-RU')} ₽
+            <br />
+            <span style={{ color: '#8c8c8c' }}>¥{cny.toFixed(2)}</span>
+          </span>
+        );
+      },
+    },
+    { title: '月销', dataIndex: 'soldCount', width: 72, align: 'right', sorter: true },
+    {
+      title: '加购率',
+      dataIndex: 'convToCartPdp',
+      width: 92,
+      align: 'right',
+      render: (v) => (v === null ? '—' : <Tag color={Number(v) >= 10 ? 'green' : 'orange'}>{v}%</Tag>),
+    },
+    {
+      title: '退货率',
+      dataIndex: 'cancelRate',
+      width: 88,
+      align: 'right',
+      render: (v) => (v === null ? '—' : <span style={{ color: Number(v) > 20 ? '#ff4d4f' : undefined }}>{v}%</span>),
+    },
+    { title: '评论', dataIndex: 'reviewsCount', width: 66, align: 'right' },
+    {
+      title: '广告占比',
+      dataIndex: 'drr',
+      width: 92,
+      align: 'right',
+      render: (v) => (Number(v) === 0 ? <Tag color="green">零广告</Tag> : v + '%'),
+    },
+    { title: '上架天', dataIndex: 'createDays', width: 80, align: 'right' },
+    { title: '发货', dataIndex: 'salesSchema', width: 70, render: (v) => (v ? <Tag>{v}</Tag> : '—') },
+    {
+      title: '规则标签',
+      dataIndex: 'tags',
+      width: 150,
+      render: (tags: any) =>
+        tags && tags.length
+          ? tags.map((t: any, i: number) => (
+              <Tooltip key={i} title="点击查看这个标签的规则与命中条件">
+                <Tag
+                  color={t.color || 'blue'}
+                  onClick={() => openTagDetail(t.name)}
+                  style={{ marginBottom: 2, cursor: 'pointer' }}
+                >
+                  {t.name}
+                </Tag>
+              </Tooltip>
+            ))
+          : <span style={{ color: '#bbb' }}>—</span>,
+    },
+    {
+      title: '首次采集',
+      dataIndex: 'firstSeenAt',
+      width: 160,
+      render: (v) => new Date(v).toLocaleString('zh-CN'),
+    },
+    {
+      title: '操作',
+      key: 'op',
+      width: 120,
+      minWidth: 100,
+      fixed: 'right',
+      render: (_: any, r: any) => (
+        <Space size={4} wrap>
+          <Button type="link" size="small" onClick={() => window.open(`/pricing?sku=${r.sku}`, '_blank')}>
+            核价
+          </Button>
+          <Popconfirm
+            title={`删除「${r.sku}」？`}
+            description="删除后不可恢复"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => deleteOne(r)}
+          >
+            <Button type="link" size="small" danger>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  const { columns, scrollX, resetWidths, customized } = useResizableColumns('products', baseColumns);
+
   return (
     <div>
       <h1 className="page-title">商品库</h1>
@@ -309,6 +469,11 @@ export default function ProductsPage() {
         size="small"
         extra={
           <Space wrap>
+            <Tooltip title={customized ? '恢复默认列宽' : '把鼠标移到表头两列之间，出现竖线时左右拖动即可调整列宽（会自动记住）'}>
+              <Button size="small" icon={<ColumnWidthOutlined />} onClick={resetWidths} disabled={!customized}>
+                还原列宽
+              </Button>
+            </Tooltip>
             <Button size="small" icon={<DownloadOutlined />} onClick={exportCsv} disabled={!list.length}>
               导出当前页
             </Button>
@@ -333,7 +498,9 @@ export default function ProductsPage() {
           size="small"
           loading={loading}
           dataSource={list}
-          scroll={{ x: 1800 }}
+          columns={columns}
+          components={RESIZABLE_TABLE_COMPONENTS}
+          scroll={{ x: scrollX }}
           rowSelection={{
             selectedRowKeys: selected,
             onChange: (keys) => setSelected(keys as number[]),
@@ -354,154 +521,6 @@ export default function ProductsPage() {
               sortOrder: order === 'ascend' ? 'asc' : order === 'descend' ? 'desc' : undefined,
             });
           }}
-          columns={[
-            {
-              title: '商品',
-              dataIndex: 'title',
-              width: 320,
-              render: (t: any, r: any) => {
-                const title = String(t || '(无标题)');
-                const short = title.length > TITLE_MAX ? title.slice(0, TITLE_MAX) + '…' : title;
-                return (
-                  <Space size={8} align="start">
-                    {r.imageUrl ? (
-                      <a href={r.productUrl} target="_blank" rel="noreferrer">
-                        <img
-                          src={proxyImageUrl(r.imageUrl)}
-                          alt=""
-                          loading="lazy"
-                          style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 4, background: '#f5f5f5' }}
-                        />
-                      </a>
-                    ) : (
-                      <Tooltip title="这个商品还没抓到主图（重新采集一次即可带上，或让系统抓一次）">
-                        <div
-                          style={{
-                            width: 44,
-                            height: 44,
-                            borderRadius: 4,
-                            background: '#f5f5f5',
-                            color: '#bbb',
-                            fontSize: 10,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          无图
-                        </div>
-                      </Tooltip>
-                    )}
-                    <div style={{ maxWidth: 250 }}>
-                      <Tooltip title={title}>
-                        <a href={r.productUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13 }}>
-                          {short}
-                        </a>
-                      </Tooltip>
-                      <div style={{ fontSize: 11, color: '#8c8c8c' }} className="mono">
-                        {r.sku}
-                      </div>
-                    </div>
-                  </Space>
-                );
-              },
-            },
-            { title: '类目', dataIndex: 'category3Name', width: 130, ellipsis: true },
-            { title: '品牌', dataIndex: 'brand', width: 100 },
-            {
-              title: '价格(₽/¥)',
-              dataIndex: 'price',
-              width: 110,
-              align: 'right',
-              sorter: true,
-              render: (v: any) => {
-                if (v === null || v === undefined) return '—';
-                const cny = rate > 0 ? Number(v) * rate : 0;
-                return (
-                  <span className="mono">
-                    {Number(v).toLocaleString('ru-RU')} ₽
-                    <br />
-                    <span style={{ color: '#8c8c8c' }}>¥{cny.toFixed(2)}</span>
-                  </span>
-                );
-              },
-            },
-            { title: '月销', dataIndex: 'soldCount', width: 72, align: 'right', sorter: true },
-            {
-              title: '加购率',
-              dataIndex: 'convToCartPdp',
-              width: 92,
-              align: 'right',
-              render: (v) => (v === null ? '—' : <Tag color={Number(v) >= 10 ? 'green' : 'orange'}>{v}%</Tag>),
-            },
-            {
-              title: '退货率',
-              dataIndex: 'cancelRate',
-              width: 88,
-              align: 'right',
-              render: (v) => (v === null ? '—' : <span style={{ color: Number(v) > 20 ? '#ff4d4f' : undefined }}>{v}%</span>),
-            },
-            { title: '评论', dataIndex: 'reviewsCount', width: 66, align: 'right' },
-            {
-              title: '广告占比',
-              dataIndex: 'drr',
-              width: 92,
-              align: 'right',
-              render: (v) => (Number(v) === 0 ? <Tag color="green">零广告</Tag> : v + '%'),
-            },
-            { title: '上架天', dataIndex: 'createDays', width: 80, align: 'right' },
-            { title: '发货', dataIndex: 'salesSchema', width: 70, render: (v) => (v ? <Tag>{v}</Tag> : '—') },
-            {
-              title: '规则标签',
-              dataIndex: 'tags',
-              width: 150,
-              render: (tags: any) =>
-                tags && tags.length
-                  ? tags.map((t: any, i: number) => (
-                      <Tooltip key={i} title="点击查看这个标签的规则与命中条件">
-                        <Tag
-                          color={t.color || 'blue'}
-                          onClick={() => openTagDetail(t.name)}
-                          style={{ marginBottom: 2, cursor: 'pointer' }}
-                        >
-                          {t.name}
-                        </Tag>
-                      </Tooltip>
-                    ))
-                  : <span style={{ color: '#bbb' }}>—</span>,
-            },
-            {
-              title: '首次采集',
-              dataIndex: 'firstSeenAt',
-              width: 160,
-              render: (v) => new Date(v).toLocaleString('zh-CN'),
-            },
-            {
-              title: '操作',
-              key: 'op',
-              width: 120,
-              fixed: 'right',
-              render: (_: any, r: any) => (
-                <Space size={4} wrap>
-                  <Button type="link" size="small" onClick={() => window.open(`/pricing?sku=${r.sku}`, '_blank')}>
-                    核价
-                  </Button>
-                  <Popconfirm
-                    title={`删除「${r.sku}」？`}
-                    description="删除后不可恢复"
-                    okText="删除"
-                    okButtonProps={{ danger: true }}
-                    cancelText="取消"
-                    onConfirm={() => deleteOne(r)}
-                  >
-                    <Button type="link" size="small" danger>
-                      删除
-                    </Button>
-                  </Popconfirm>
-                </Space>
-              ),
-            },
-          ]}
         />
       </Card>
 

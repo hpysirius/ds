@@ -206,3 +206,45 @@ body {
   color: #24292f;
   word-break: break-all;
 }
+
+/* ===== 可拖拽调整列宽（components/ResizableTable.tsx）===== */
+.ds-resizable-th > .ant-table-cell {
+  overflow: visible;
+}
+th.ds-resizable-th {
+  position: relative;
+}
+.ds-col-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 9px;
+  z-index: 2;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+}
+.ds-col-resizer::after {
+  content: '';
+  position: absolute;
+  top: 25%;
+  left: 4px;
+  height: 50%;
+  width: 1px;
+  background: #d9d9d9;
+}
+.ds-col-resizer:hover::after,
+.ds-col-resizer.dragging::after {
+  background: #1677ff;
+  width: 2px;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
+}
+/* 拖动过程中锁住光标和文本选中，不然会一路刷蓝 */
+body.ds-col-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.ds-col-resizing * {
+  cursor: col-resize !important;
+}
