@@ -50,7 +50,7 @@ async function bootstrap() {
   /*
    * CORS：除前端白名单外，还要放行 chrome-extension:// —— 「DS 采集助手」插件运行在用户
    * 自己的正常 Chrome 里（origin 是 chrome-extension://<id>，重装后 id 会变，
-   * 所以按前缀放行而不是写死某个 id）。插件只走 /pricing/extension/* 这几个 @Public 接口。
+   * 所以按前缀放行而不是写死某个 id）。插件走 /pricing/extension/* 与 /rules/sync 这些 @Public 接口。
    */
   app.enableCors({
     origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {

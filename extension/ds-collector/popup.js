@@ -340,5 +340,9 @@ chrome.storage.local.get(['pricingUrl']).then((s) => {
   if (s.pricingUrl) $('target').value = s.pricingUrl;
 });
 
+// 打开弹窗时把采集规则同步一份到后台系统（后台「规则标签管理」页展示用）。
+// 静默执行：同步失败只在日志里留一行，不影响采集。
+send({ type: 'DS_SYNC_RULES' });
+
 refresh();
 timer = setInterval(refresh, 2000);

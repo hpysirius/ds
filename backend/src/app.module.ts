@@ -10,6 +10,7 @@ import { StoresModule } from './modules/stores/stores.module';
 import { BrowserModule } from './modules/browser/browser.module';
 import { CollectModule } from './modules/collect/collect.module';
 import { ProductsModule } from './modules/products/products.module';
+import { RulesModule } from './modules/rules/rules.module';
 import { ScreeningModule } from './modules/screening/screening.module';
 import { StatsModule } from './modules/stats/stats.module';
 import { PricingModule } from './modules/pricing/pricing.module';
@@ -28,6 +29,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     BrowserModule,
     CollectModule,
     ProductsModule,
+    RulesModule,
     ScreeningModule,
     StatsModule,
     PricingModule,

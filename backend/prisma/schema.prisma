@@ -56,6 +56,7 @@ model Store {
   pricingRecords PricingRecord[]
   filterPresets  FilterPreset[]
   screeningRuns  ScreeningRun[]
+  collectRules   CollectRule[]
 
   @@map("stores")
 }
@@ -163,6 +164,34 @@ model Product {
   @@index([createDays])
   @@index([lastSeenAt])
   @@map("products")
+}
+
+// ============ 采集规则（插件「采集规则」同步上来的标签规则）============
+/// 插件端规则存在 chrome.storage.local 里，由插件上报到这里落库，
+/// 后台「规则标签管理」页只读展示；商品 raw.tags 里的标签按 tag 名与之对应。
+model CollectRule {
+  id          Int      @id @default(autoincrement())
+  ruleId      String   @db.VarChar(60) // 插件侧规则 id（r_xxx），用于幂等更新
+  name        String?  @db.VarChar(100) // 规则名称
+  tag         String   @db.VarChar(40) // 标签名称（商品 raw.tags[].name）
+  color       String?  @db.VarChar(20)
+  priority    Int      @default(0)
+  enabled     Boolean  @default(true)
+  brand       String?  @db.VarChar(20) // any / none / custom
+  brandText   String?  @db.VarChar(100)
+  salesSchema String?  @db.VarChar(20) // FBS / FBO / rFBS
+  conds       Json? // { 字段key: { min, max } }
+  condText    String?  @db.VarChar(600) // 条件摘要（后端生成，列表直接展示）
+  storeId     Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: SetNull)
+
+  @@index([storeId])
+  @@index([storeId, ruleId])
+  @@index([tag])
+  @@map("collect_rules")
 }
 
 // ============ 商品指标历史（每次采集留一条）============

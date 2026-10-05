@@ -90,6 +90,34 @@ async function tagItem(item) {
   if (tags.length) item.tags = tags;
 }
 
+/**
+ * 把「采集规则」全量上报到后台（后台「规则标签管理」页用）。
+ *
+ * 规则本身存在 chrome.storage.local 里，后台看不到 —— 这里把整份规则推上去落库。
+ * 同步失败绝不影响采集主流程（只是后台少几条展示数据），所以全部吞掉异常，
+ * 只在失败时往插件日志里留一行，方便排查。
+ */
+async function syncRules() {
+  try {
+    const api = await getApi();
+    const rules = await getRules();
+    const res = await safeFetch(`${api}/rules/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rules }),
+    });
+    if (!res.ok) {
+      await log(`⚠ 采集规则同步到后台失败 HTTP ${res.status}（不影响采集）`);
+      return { ok: false, status: res.status };
+    }
+    const json = await res.json().catch(() => null);
+    return { ok: true, ...(json || {}) };
+  } catch (e) {
+    await log(`⚠ 采集规则同步到后台失败：${String((e && e.message) || e).slice(0, 90)}（不影响采集）`);
+    return { ok: false, error: String((e && e.message) || e).slice(0, 120) };
+  }
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -478,6 +506,7 @@ async function collectActiveTab() {
   const r = await ingest(payload);
   const n = (r && r.fields ? r.fields.length : 0);
   await log(`${r && r.created ? '🆕 新建' : '✏️ 更新'} ${sku}：${(data.title || '').slice(0, 22)}… → ${n} 个字段${data.pluginCard ? '（含经营指标）' : ''}`);
+  void syncRules(); // 顺带把规则同步到后台，失败不影响本次采集
   return r;
 }
 
@@ -496,6 +525,8 @@ async function ingestListChunked(sourceUrl, items) {
     updated += r.updated || 0;
     skipped += r.skipped || 0;
   }
+  // 采集成功顺带把规则同步到后台（不阻塞、失败不影响采集）
+  void syncRules();
   return { created, updated, skipped, total: items.length };
 }
 
@@ -718,6 +749,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           break;
         case 'DS_COLLECT_1688':
           sendResponse({ ok: true, result: await collect1688() });
+          break;
+        case 'DS_SYNC_RULES':
+          sendResponse({ ok: true, result: await syncRules() });
           break;
         case 'DS_SAVE_PACK':
           sendResponse({ ok: true, saved: await savePackCache(msg.offerId, msg.pack || {}) });

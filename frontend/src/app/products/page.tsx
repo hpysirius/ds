@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Button, Card, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Table, Tag, Tooltip, message } from 'antd';
+import { Button, Card, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Spin, Table, Tag, Tooltip, message } from 'antd';
 import { CalculatorOutlined, DeleteOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { http, proxyImageUrl } from '@/lib/api';
 import { useStore } from '@/lib/store-context';
+import { RuleTagChip, RuleTagDetail } from '@/components/RuleTagDetail';
 
 /** 标题最多显示多少字（超出省略号，鼠标悬浮看全文） */
 const TITLE_MAX = 26;
@@ -33,6 +34,24 @@ export default function ProductsPage() {
   const [sortBy, setSortBy] = useState<string | undefined>();
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | undefined>();
   const [tagOptions, setTagOptions] = useState<{ label: string; value: string }[]>([]);
+
+  /** 点商品行的规则标签 → 查这个标签对应的规则并弹窗展示详情 */
+  const [tagDetail, setTagDetail] = useState<{ tag: string; rules: any[]; productCount?: number } | null>(null);
+  const [tagLoading, setTagLoading] = useState(false);
+
+  const openTagDetail = async (name: string) => {
+    setTagDetail({ tag: name, rules: [] });
+    setTagLoading(true);
+    try {
+      const { data } = await http.get(`/rules/by-tag/${encodeURIComponent(name)}`, { params: { ...storeParam } });
+      setTagDetail(data);
+    } catch (e: any) {
+      message.error(e.message);
+      setTagDetail(null);
+    } finally {
+      setTagLoading(false);
+    }
+  };
 
   /** 删除失败时给出人话提示（未登录要单独说，否则只看到一句 Unauthorized） */
   const delError = (e: any, what: string) => {
@@ -439,9 +458,15 @@ export default function ProductsPage() {
               render: (tags: any) =>
                 tags && tags.length
                   ? tags.map((t: any, i: number) => (
-                      <Tag key={i} color={t.color || 'blue'} style={{ marginBottom: 2 }}>
-                        {t.name}
-                      </Tag>
+                      <Tooltip key={i} title="点击查看这个标签的规则与命中条件">
+                        <Tag
+                          color={t.color || 'blue'}
+                          onClick={() => openTagDetail(t.name)}
+                          style={{ marginBottom: 2, cursor: 'pointer' }}
+                        >
+                          {t.name}
+                        </Tag>
+                      </Tooltip>
                     ))
                   : <span style={{ color: '#bbb' }}>—</span>,
             },
@@ -479,6 +504,47 @@ export default function ProductsPage() {
           ]}
         />
       </Card>
+
+      {/* 点「规则标签」列里的标签名 → 展示该标签的规则与命中条件 */}
+      <Modal
+        open={!!tagDetail}
+        onCancel={() => setTagDetail(null)}
+        footer={
+          <Space>
+            <Button onClick={() => setTagDetail(null)}>关闭</Button>
+            <Button type="primary" onClick={() => router.push('/rules')}>
+              去规则标签管理
+            </Button>
+          </Space>
+        }
+        width={640}
+        title={
+          tagDetail ? (
+            <Space>
+              标签详情
+              <RuleTagChip tag={tagDetail.tag} size="small" color={tagDetail.rules?.[0]?.color} />
+            </Space>
+          ) : (
+            ''
+          )
+        }
+      >
+        {tagLoading ? (
+          <div style={{ textAlign: 'center', padding: '30px 0' }}>
+            <Spin />
+          </div>
+        ) : tagDetail?.rules?.length ? (
+          tagDetail.rules.map((r: any, i: number) => (
+            <div key={r.id ?? i} style={{ borderTop: i ? '1px dashed #f0f0f0' : 'none', paddingTop: i ? 14 : 0, marginTop: i ? 14 : 0 }}>
+              <RuleTagDetail rule={r} />
+            </div>
+          ))
+        ) : (
+          <RuleTagDetail
+            rule={{ tag: tagDetail?.tag || '', source: 'product', productCount: tagDetail?.productCount ?? 0 }}
+          />
+        )}
+      </Modal>
     </div>
   );
 }

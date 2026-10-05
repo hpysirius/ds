@@ -16,6 +16,23 @@ function save() {
   return chrome.storage.local.set({ [RULES_KEY]: rules });
 }
 
+/**
+ * 保存后通知 background 把规则同步到后台系统（后台「规则标签管理」页用）。
+ * 读一下 lastError 避免控制台报 "Unchecked runtime.lastError"；同步失败不影响本地保存。
+ */
+function notifySync() {
+  try {
+    chrome.runtime.sendMessage({ type: 'DS_SYNC_RULES' }, () => void chrome.runtime.lastError);
+  } catch (e) {
+    /* 扩展上下文不可用时忽略 */
+  }
+}
+
+/** 存本地 + 同步后台 */
+function persist() {
+  return save().then(() => notifySync());
+}
+
 const escapeHtml = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -150,7 +167,7 @@ $('save').onclick = async () => {
   if (idx >= 0) rules[idx] = { ...rules[idx], ...r };
   else rules.push(r);
   rules.sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0));
-  await save();
+  await persist();
   closeModal();
   render();
 };
@@ -163,7 +180,7 @@ $('list').addEventListener('click', async (e) => {
     const r = rules[i];
     if (confirm(`确定删除规则「${r.name || '未命名'}」？`)) {
       rules.splice(i, 1);
-      await save();
+      await persist();
       render();
     }
   } else if (t.hasAttribute('data-edit')) {
@@ -176,7 +193,7 @@ $('list').addEventListener('change', async (e) => {
   if (t.hasAttribute && t.hasAttribute('data-toggle')) {
     const i = Number(t.getAttribute('data-toggle'));
     rules[i].enabled = t.checked;
-    await save();
+    await persist();
     render();
   }
 });

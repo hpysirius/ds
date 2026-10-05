@@ -14,13 +14,17 @@
   **布尔型 query 参数不要用 boolean 声明**：`'false'` 会被隐式转成 `true`。改用字符串（`@IsIn(['true','false','1','0'])`）在 service 里判。
 - 更新记录时用「字段白名单」再写库；`fmtRecord` 会派生 `weightG` 等**非数据库列**字段，直接 spread 回 Prisma 会报 Unknown arg。
 - 自定义错误要带 `code`/额外字段时，全局异常过滤器 `common/filters/all-exceptions.filter.ts` 会原样透传（曾只传 message，已修）。
+- **JSON 字段写 null 要用 `Prisma.DbNull`**（Prisma 5 不接受裸 `null`）；**可空列的「唯一约束 + upsert」不可靠**（MySQL 唯一索引对 NULL 不生效）→ 用 `findFirst` + update/create。
+- 登录响应里 token 字段名是 **`accessToken`**（不是 `access_token`），user 在同级的 `user` 上。
+- 统计 `products.raw.tags` 这类 JSON 数组用 MySQL 8 的 `JSON_TABLE`（线上 8.0.45 ✓，本地 docker 也可用），`try/catch` 兜底。
+- **新增模块**：`src/modules/<x>/`（module+controller+service），在 `app.module.ts` 的 imports 注册。要给 @Public 接口解析员工 token 归店时，module 里 `JwtModule.registerAsync({ secret: JWT_SECRET })`（照抄 `pricing.module.ts`），service 里用 `resolveStoreId(authHeader)`。
 
 ## 前端约定
 - `http`（axios，`src/lib/api.ts`）拦截器保留 `err.response` 状态码，用来识别 401/业务 code。
 - 定价相关页面：`src/app/pricing/page.tsx`（Tab：定价记录/物流渠道/参数设置）+ `src/app/pricing/Workbench.tsx`（定价工作台，含 1688 抓取与回填）。
 - 列表操作列尽量用 `Button type="link" size="small"` + `Popconfirm` 二次确认，与既有风格一致。
 - **多租户店铺隔离（见下节）**：任何数据页请求都要带 `storeId`（超管可切店，员工锁定本店），从 `useStore()` 取 `storeParam`。
-- **全员可见页面**：若某页要「所有登录用户都能看」而不属于业务权限，**不要**登记进 `lib/permissions.ts` 的 `PERMISSIONS`（不登记 → `ROUTE_PERMISSION` 里没有它 → 路由守卫直接放行），只在 `AppShell.tsx` 的 `menus` 里无条件 `items.push(...)`。示范：`/guide`「使用说明」（`app/guide/page.tsx`，纯静态文案 + 流程图，无接口）。
+- **全员可见页面**：若某页要「所有登录用户都能看」而不属于业务权限，**不要**登记进 `lib/permissions.ts` 的 `PERMISSIONS`（不登记 → `ROUTE_PERMISSION` 里没有它 → 路由守卫直接放行），只在 `AppShell.tsx` 的 `menus` 里无条件 `items.push(...)`（用 `add()` 也行 —— 它的守卫是 `if (key && !perms.includes(key))`，key 为 undefined 会直接放行）。示范：`/guide`「使用说明」、`/rules`「规则标签管理」（均纯前端页 + 后端按店铺隔离）。
 - **商品图一律走同源代理**：统一用 `lib/api.ts` 的 `proxyImageUrl(u)`，**不要写 `<img src={商品图原地址}>`** —— Ozon（`ir-*.ozonstatic.cn`）/1688 的图有防盗链，直连会 403，页面只显示裂图且控制台看不出明显错误。后端代理是 `@Public` 的 `GET pricing/sourcing/image-proxy`。
 - **改图片代理白名单前必须先统计真实域名**：白名单在 `sourcing.service.ts` 的 `ALLOWED_IMAGE_HOSTS`（含 `ozon.ru`/`ozone.ru`/`ozonstatic.com`/`ozonstatic.cn`/`1688.com`/`alicdn.com`…）。**漏一个域名 = 整站商品图静默裂图**（2026-10-02 就因漏 `ozonstatic.cn` 出过一次线上故障）。统计命令：`select substring_index(substring_index(imageUrl,'/',3),'//',-1) host, count(*) from ds.products group by host`。紧急放行可用环境变量 `IMAGE_PROXY_HOSTS=a.com,b.com`，免改代码。
 
@@ -45,6 +49,7 @@
 - 采集上报走后端 `@Public` 的 `/pricing/extension/*`；本地需经 localhost:3100 中继绕过 Chrome LNA 限制。
 - **归属店铺（2026-10-02 新增）**：`identity-bridge.js` 注入 ds 网页读 `localStorage.ds_token`/`ds_user`，推给 background 存 `ds_identity`；`safeFetch`/`relayFetchFn` 自动带 `Authorization: Bearer <token>`；后端 `PricingModule` 注册 JwtModule，`SourcingService.resolveStoreId(authHeader)` 解析员工 storeId → 采集数据归本店。无 token/无效 token → storeId=null（归超管「全部」，兼容旧行为）。**插件后端地址须与所登录的 ds 站点同源（同一 JWT_SECRET）**，否则解析不出店铺。弹窗显示「采集归属」便于自查。
 - **规则默认只「打标签」不「过滤」**：`rules-lib.js` 的 `applyRulesToItem` 给命中商品加 `item.tags`（存 `products.raw.tags`）；采集是全量的。
+- **采集规则同步到后台（2026-10-05）**：`background.js` 的 `syncRules()` 把 `chrome.storage.local.rules` 全量 `POST /rules/sync`（静默失败，只在插件日志留一行）；触发点 = **打开弹窗时 / 规则保存·删除·启停后 / 每次采集成功后**。后台 `/rules`「规则标签管理」只读展示规则与命中商品数。`rules-lib.js` 的 `RULE_DEFS` 必须与后端 `backend/src/modules/rules/rule-defs.ts` 的 `RULE_DEFS` 逐项对齐（key + 顺序）。
 - **过滤模式（2026-10-02 新增）**：`chrome.storage.local.ds_filter_mode` 开关（popup 复选框）。开时 `background.js` 用 `rules-lib.js` 的 `passesFilter(item, rules)` 在入库前丢弃未命中商品；`ruleHasConstraints` 保证只有「带条件」的规则才当过滤器（无条件规则命中全部、不计入）。默认关。
 - 改插件后必须到 `chrome://extensions` **重新加载扩展**才生效；改 `manifest.json` 版本号便于确认已更新。
 - **后端地址配置（2026-10-02 换域名时更新）**：`DEFAULT_API = 'http://ozon.qinxianty.com/api'`；popup「填服务器」预设同为该值，「填本地」= `http://localhost:3101`；`background.js` 有 `LEGACY_API_MAP` 在启动时把旧的 `http://114.132.99.141[/api]` 静默升级为域名（自定义地址不动）。

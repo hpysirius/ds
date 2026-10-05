@@ -50,6 +50,16 @@ https://www.ozon.ru/highlight/tovary-iz-kitaya-935133/?category=14793&sorting=ne
 | `POST /pricing/extension/products` | 列表页批量上报（新商品自动入库）|
 | `GET  /pricing/extension/pending?limit=20` | 拉待补详情清单 |
 | `POST /pricing/extension/product-info` | 详情页单条上报 |
+| `POST /rules/sync` | 把「采集规则」全量同步到后台（后台「规则标签管理」页展示）|
+
+## 采集规则同步到后台
+
+规则本身存在浏览器里（`chrome.storage.local` 的 `rules`），后台系统看不到。插件会把这整份规则
+`POST` 到 `/rules/sync` 落库，后台左侧菜单「规则标签管理」就能看到每个规则标签的名称、颜色、
+优先级、启用状态和全部条件明细，商品库列表里的「规则标签」也可以点开看详情。
+
+触发时机：**打开插件弹窗时**、**在规则页保存/删除/启停后**、**每次采集成功后**。
+同步是静默的（失败只在插件日志里留一行），不影响采集；带登录 token 上报时规则归到该员工店铺。
 
 ## 采哪些字段
 

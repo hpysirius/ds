@@ -11,6 +11,7 @@ import {
   FilterOutlined,
   ReadOutlined,
   SettingOutlined,
+  TagsOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { http } from '@/lib/api';
@@ -132,6 +133,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     add('/', '数据概览', <DashboardOutlined />);
     add('/collect', '数据采集', <CloudDownloadOutlined />);
     add('/products', '商品库', <AppstoreOutlined />);
+    // 规则标签管理：/rules 没登记进 ROUTE_PERMISSION，所以这里对所有登录用户都显示
+    // （插件采集规则同步上来的标签规则，是商品库的附属信息）
+    add('/rules', '规则标签管理', <TagsOutlined />);
     add('/screening', '智能筛选', <FilterOutlined />);
 
     const pricingChildren: any[] = [];
