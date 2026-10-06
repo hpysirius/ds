@@ -25,6 +25,7 @@ import {
   userPermissions,
 } from '@/lib/permissions';
 import { StoreProvider, useStore, STORAGE_KEY } from '@/lib/store-context';
+import { PluginDownloadButton } from '@/components/PluginDownload';
 import { Select } from 'antd';
 import { ShopOutlined } from '@ant-design/icons';
 
@@ -243,6 +244,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <StoreSwitcher user={user} />
             {user ? (
               <Space>
+                {/* 插件下载入口：所有登录用户都能拿到最新版插件包（插件更新后这里会亮小红点） */}
+                <PluginDownloadButton />
                 <Tag color={user.role === 'super_admin' ? 'red' : user.role === 'admin' ? 'blue' : 'default'}>
                   {ROLE_TEXT[user.role] || '用户'}
                 </Tag>

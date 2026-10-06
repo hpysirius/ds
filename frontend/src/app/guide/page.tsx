@@ -23,6 +23,7 @@ import {
   SearchOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
+import { PluginDownloadButton, PluginInstallSteps, usePluginInfo, formatTime, formatSize } from '@/components/PluginDownload';
 
 /** 流程总览：5 个大步骤 */
 const FLOW = [
@@ -226,6 +227,16 @@ const FAQ: { q: string; a: React.ReactNode }[] = [
     a: <>可以。点标签名会弹出这个小标签对应的规则与全部命中条件；完整列表在左侧菜单「规则标签管理」里。</>,
   },
   {
+    q: '插件有新版了，怎么更新？',
+    a: (
+      <>
+        点顶部栏右侧（或本页上方）的「<b>下载插件</b>」，会显示当前最新版本号与打包时间；有新版时按钮上会亮小红点。
+        下载后解压覆盖原来的 <span className="mono">ds-collector</span> 文件夹，再回到{' '}
+        <span className="mono">chrome://extensions</span> 点插件卡片上的刷新按钮即可。
+      </>
+    ),
+  },
+  {
     q: '改了插件设置/代码，为什么没生效？',
     a: (
       <>
@@ -237,6 +248,7 @@ const FAQ: { q: string; a: React.ReactNode }[] = [
 ];
 
 export default function GuidePage() {
+  const pluginInfo = usePluginInfo();
   return (
     <div>
       <div className="guide-hero">
@@ -257,6 +269,31 @@ export default function GuidePage() {
           </Tag>
         </div>
       </div>
+
+      <Card
+        size="small"
+        title="下载浏览器插件"
+        style={{ marginBottom: 14 }}
+        extra={
+          <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+            {pluginInfo?.version
+              ? `最新版 v${pluginInfo.version} · ${formatTime(pluginInfo.builtAt)} 打包 · ${formatSize(pluginInfo.size)}`
+              : '正在读取版本…'}
+          </span>
+        }
+      >
+        <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ flex: '0 0 230px', minWidth: 200 }}>
+            <PluginDownloadButton size="middle" type="primary" block label="下载插件包（zip）" />
+            <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 8, lineHeight: 1.75 }}>
+              插件每次更新后，重新下载最新包按右侧步骤覆盖安装即可；顶部栏的「下载插件」按钮在有新版时会亮<span style={{ color: '#ff4d4f' }}>小红点</span>提醒。
+            </div>
+          </div>
+          <div style={{ flex: 1, minWidth: 300 }}>
+            <PluginInstallSteps />
+          </div>
+        </div>
+      </Card>
 
       <Card size="small" title="一、整体流程总览" style={{ marginBottom: 14 }}>
         <div className="flow-wrap">
@@ -305,8 +342,8 @@ export default function GuidePage() {
               <b>① 装好采集插件</b>
             </div>
             <div style={{ fontSize: 12, color: '#595959', lineHeight: 1.75 }}>
-              打开 <span className="mono">chrome://extensions</span> → 打开右上角「开发者模式」→ 点「加载已解压的扩展程序」→ 选择
-              <span className="mono"> extension/ds-collector</span> 目录 → 建议把插件固定到工具栏。
+              点页面上方「<b>下载插件包</b>」拿到 zip → 解压出 <span className="mono">ds-collector</span> 文件夹 → 打开
+              <span className="mono"> chrome://extensions</span> → 打开右上角「开发者模式」→ 点「加载已解压的扩展程序」选中该文件夹 → 建议固定到工具栏。
             </div>
           </div>
           <div style={{ border: '1px solid #eef0f3', borderRadius: 10, padding: 14 }}>

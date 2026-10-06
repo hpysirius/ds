@@ -15,3 +15,7 @@ backup*/
 *.dump
 
 run/
+
+# 插件打包产物：由 scripts/pack-extension.sh 生成，deploy.sh 每次部署会自动重建
+frontend/public/plugin/*.zip
+frontend/public/plugin/plugin-info.json

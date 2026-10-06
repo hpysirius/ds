@@ -36,6 +36,11 @@ echo "==> [1/5] 检查 SSH 连接"
 ssh -o BatchMode=yes -o ConnectTimeout=8 "$SERVER" 'echo SSH_OK' \
   || { echo "ERROR: 无法 SSH 连接到 $SERVER，请确认 SSH key 已配置"; exit 1; }
 
+echo "==> [1.5/5] 打包浏览器插件（产出 frontend/public/plugin/ds-collector.zip + plugin-info.json）"
+#  每次部署都重新打包，保证「下载插件」入口拿到的永远是与源码一致的最新版；
+#  版本号直接读 extension/ds-collector/manifest.json，前端会显示出来。
+bash scripts/pack-extension.sh
+
 echo "==> [2/5] 本地打包源码并直传到服务器（排除依赖/构建产物/本机 env）"
 Excludes=(
   --exclude=node_modules --exclude=.git --exclude=dist

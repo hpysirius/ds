@@ -24,6 +24,8 @@
 - 定价相关页面：`src/app/pricing/page.tsx`（Tab：定价记录/物流渠道/参数设置）+ `src/app/pricing/Workbench.tsx`（定价工作台，含 1688 抓取与回填）。
 - 列表操作列尽量用 `Button type="link" size="small"` + `Popconfirm` 二次确认，与既有风格一致。
 - **列表列宽可拖拽**：统一用 `components/ResizableTable.tsx` 的 `useResizableColumns(storageKey, baseColumns)` + `RESIZABLE_TABLE_COMPONENTS`（已在 `app/products/page.tsx` 落地，其他列表页照抄即可换 key）。零第三方依赖，宽度存 localStorage（`ds.colWidths.v1.*`）。
+- **静态资源放 `frontend/public/`**：直接以根路径访问（`frontend/public/plugin/x.zip` → `/plugin/x.zip`），
+  `next start` 运行时读取、无需重新构建；但这些是生成物，已在 `.gitignore` 里排除。
 - **多租户店铺隔离（见下节）**：任何数据页请求都要带 `storeId`（超管可切店，员工锁定本店），从 `useStore()` 取 `storeParam`。
 - **全员可见页面**：若某页要「所有登录用户都能看」而不属于业务权限，**不要**登记进 `lib/permissions.ts` 的 `PERMISSIONS`（不登记 → `ROUTE_PERMISSION` 里没有它 → 路由守卫直接放行），只在 `AppShell.tsx` 的 `menus` 里无条件 `items.push(...)`（用 `add()` 也行 —— 它的守卫是 `if (key && !perms.includes(key))`，key 为 undefined 会直接放行）。示范：`/guide`「使用说明」、`/rules`「规则标签管理」（均纯前端页 + 后端按店铺隔离）。
 - **商品图一律走同源代理**：统一用 `lib/api.ts` 的 `proxyImageUrl(u)`，**不要写 `<img src={商品图原地址}>`** —— Ozon（`ir-*.ozonstatic.cn`）/1688 的图有防盗链，直连会 403，页面只显示裂图且控制台看不出明显错误。后端代理是 `@Public` 的 `GET pricing/sourcing/image-proxy`。
@@ -56,6 +58,12 @@
 - **后端地址配置（2026-10-02 换域名时更新）**：`DEFAULT_API = 'http://ozon.qinxianty.com/api'`；popup「填服务器」预设同为该值，「填本地」= `http://localhost:3101`；`background.js` 有 `LEGACY_API_MAP` 在启动时把旧的 `http://114.132.99.141[/api]` 静默升级为域名（自定义地址不动）。
   `manifest.json` 的 `host_permissions` 与 `content_scripts.matches` **必须同时包含所有要用的站点 origin**（含 `http://ozon.qinxianty.com/*`）——漏了 matches 的话，域名页面上的登录身份读不到，采集数据就归不了店铺。
 - 坑：`await` 不能写在 `Array.filter` 的非 async 回调里（把 `getRules()` 提前到外面）。
+- **插件分发 / 下载入口（2026-10-06）**：`bash scripts/pack-extension.sh` 把 `extension/ds-collector` 打成
+  `frontend/public/plugin/ds-collector.zip`（固定名，前端固定指向它）+ `ds-collector-v<version>.zip` + `plugin-info.json`（版本/体积/打包时间/文件数）；
+  zip 内顶层目录 `ds-collector/` 并附中文 `INSTALL.txt`，打包后自检「源码版本 == 包内 manifest 版本」。
+  **`deploy.sh` 的 `[1.5/5]` 会自动调用它**，插件改完只需跑 `deploy.sh`。**插件版本号只在 `manifest.json` 改一处**，其余全自动。
+  前端入口：`components/PluginDownload.tsx`（`PluginDownloadButton` 在 AppShell 顶栏右侧、`PluginDownloadModal` 安装说明、`PluginInstallSteps` 供 guide 复用）
+  + `/guide` 页「下载浏览器插件」卡片；读 `/plugin/plugin-info.json` 拿版本，新版本靠 localStorage `ds_plugin_downloaded_version` 对比亮小红点。
 
 ## 沙箱构建/运行坑（每次都会遇到）
 - 前台 Bash 里 `nohup ... &` 起的服务，在该次工具调用结束时会**被杀** → 必须用后台任务方式启动（`restart.sh`/前台 `start.sh` 直接在普通调用里跑也会被回收，甚至把已起的服务一起带停 → 用 `Bash(run_in_background)` 跑 `bash scripts/start.sh --no-build --foreground`）。
