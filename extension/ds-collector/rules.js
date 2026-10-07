@@ -84,7 +84,7 @@ function buildCondRows(conds) {
   $('conds').innerHTML = RULE_DEFS.map(
     (d) => `
     <div class="cond">
-      <span>${d.label}${d.unit ? `（${d.unit}）` : ''}</span>
+      <span title="${d.missingAsZero ? '商品没有评价时按 0 参与比较' : ''}">${d.label}${d.unit ? `（${d.unit}）` : ''}${d.missingAsZero ? '<i class="zero-tag">无=0</i>' : ''}</span>
       <input type="text" data-cond="${d.key}" data-side="min" placeholder="最小值" value="${conds && conds[d.key] ? escapeHtml(conds[d.key].min ?? '') : ''}" />
       <b>至</b>
       <input type="text" data-cond="${d.key}" data-side="max" placeholder="最大值" value="${conds && conds[d.key] ? escapeHtml(conds[d.key].max ?? '') : ''}" />

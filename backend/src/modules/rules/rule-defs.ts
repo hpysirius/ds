@@ -4,11 +4,15 @@
  * ⚠️ 必须与插件 `extension/ds-collector/rules-lib.js` 的 `RULE_DEFS` 保持一致
  * （key 与顺序都要对齐），否则后台展示的条件标签会对不上、摘要也会漏项。
  */
-export const RULE_DEFS: { key: string; label: string; unit?: string; isDerived?: boolean }[] = [
+export type RuleDef = { key: string; label: string; unit?: string; isDerived?: boolean; missingAsZero?: boolean };
+
+export const RULE_DEFS: RuleDef[] = [
   { key: 'soldCount', label: '月销量' },
   { key: 'soldSum', label: '月销售额' },
-  { key: 'rating', label: '商品评分' },
-  { key: 'reviewsCount', label: '评论数' },
+  // missingAsZero：商品没有评价/评分时页面不渲染该文案，采集值为空；业务上「无评价」即 0，
+  // 因此这两个字段空值按 0 参与比较（筛「零评价商品」就是 评论数 0~0）。
+  { key: 'rating', label: '商品评分', missingAsZero: true },
+  { key: 'reviewsCount', label: '评论数', missingAsZero: true },
   { key: 'price', label: '价格', unit: '卢布 ₽' },
   { key: 'priceCny', label: '价格(人民币)', isDerived: true },
   { key: 'weightG', label: '重量(g)' },

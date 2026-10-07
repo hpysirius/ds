@@ -22,8 +22,12 @@ export const RUB_TO_CNY = 0.08;
 export const RULE_DEFS = [
   { key: 'soldCount', label: '月销量' },
   { key: 'soldSum', label: '月销售额' },
-  { key: 'rating', label: '商品评分' },
-  { key: 'reviewsCount', label: '评论数' },
+  // missingAsZero：页面上「没有评价/评分」时，Ozon 卡片干脆不渲染这块文案，采集值就是 null。
+  // 但业务上「没有评价」就等于 0 条评价 / 0 分，所以这两个字段缺失时按 0 参与比较
+  // （例如「评论数 0~0」就是筛「零评价的商品」）。其他字段（价格、销量…）缺失仍判不命中，
+  // 因为采不到不等于真的是 0，瞎补 0 会让「月销量 ≤ 10」这类规则把没采到的商品全放进来。
+  { key: 'rating', label: '商品评分', missingAsZero: true },
+  { key: 'reviewsCount', label: '评论数', missingAsZero: true },
   { key: 'price', label: '价格', unit: '卢布 ₽' },
   { key: 'priceCny', label: '价格(人民币)', isDerived: true },
   { key: 'weightG', label: '重量(g)' },
@@ -135,7 +139,8 @@ export function matchRule(item, rule) {
   // 发货模式：FBS / FBO / rFBS（留空不限）
   if (rule.salesSchema && m.salesSchema !== String(rule.salesSchema).toUpperCase()) return false;
 
-  // 范围条件：min ≤ v ≤ max；字段缺失判不命中
+  // 范围条件：min ≤ v ≤ max
+  // 字段缺失默认判不命中；但标了 missingAsZero 的字段（评分 / 评论数）按 0 处理 —— 无评价即 0
   const conds = rule.conds || {};
   for (const def of RULE_DEFS) {
     const c = conds[def.key];
@@ -143,7 +148,8 @@ export function matchRule(item, rule) {
     const min = c.min === '' || c.min == null ? null : Number(c.min);
     const max = c.max === '' || c.max == null ? null : Number(c.max);
     if (min == null && max == null) continue;
-    const v = m[def.key];
+    let v = m[def.key];
+    if (v == null && def.missingAsZero) v = 0;
     if (v == null) return false;
     if (min != null && v < min) return false;
     if (max != null && v > max) return false;

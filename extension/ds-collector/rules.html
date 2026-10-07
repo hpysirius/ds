@@ -86,6 +86,7 @@
       .cond > span { width: 96px; flex: none; color: var(--muted); }
       .cond input { width: 0; flex: 1; min-width: 0; padding: 5px 7px; font-size: 12px; }
       .cond b { color: var(--muted); font-weight: 400; flex: none; }
+      .zero-tag { font-style: normal; font-size: 10px; padding: 0 4px; margin-left: 4px; border-radius: 4px; background: #e6f4ff; color: #1677ff; }
       .modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
       .form-err { color: var(--err); font-size: 12px; min-height: 18px; margin-top: 8px; }
       .hint-box {
@@ -112,6 +113,9 @@
         ② 到 Ozon 列表页点插件的「采集当前列表页」→ 命中规则的商品会自动带上标签入库。<br />
         <b>价格单位：</b>采集到的「价格 / 跟卖最低价」都是<b>卢布 ₽</b>（Ozon 原值，即使页面显示成 ¥ 也仍是卢布数值，未做汇率换算）。<br />
         <b>价格(人民币)：</b>新增的派生条件，由「价格(卢布)」按近似汇率 <b>1 ₽ ≈ 0.08 ¥</b> 自动换算，方便你直接用人民币设阈值（如 价格(人民币) ≤ 40）。汇率变动在插件代码里改一处即可。
+        <b>无评价 = 0：</b>Ozon 商品「没有评价/评分」时页面上干脆不显示这块文案，采集值就是空。
+        <b>评分 / 评论数</b>这两个字段已按「<b>空 = 0</b>」处理（标签里有<i class="zero-tag">无=0</i>标记），
+        所以「评论数 0 ~ 0」筛出来的就是<b>零评价的商品</b>；其他字段（价格、月销量…）采不到仍判不命中，不会瞎补 0。<br />
         <b>注意：</b>月销量、广告费占比等经营指标来自选品插件的浮层，需要你<b>登录 Ozon 卖家账号</b>后采集才有；
         未登录时这些条件不命中（价格/评分/评论数等公开字段不受影响）。
       </div>
