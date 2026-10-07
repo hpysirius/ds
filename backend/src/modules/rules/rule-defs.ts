@@ -4,12 +4,13 @@
  * ⚠️ 必须与插件 `extension/ds-collector/rules-lib.js` 的 `RULE_DEFS` 保持一致
  * （key 与顺序都要对齐），否则后台展示的条件标签会对不上、摘要也会漏项。
  */
-export const RULE_DEFS: { key: string; label: string }[] = [
+export const RULE_DEFS: { key: string; label: string; unit?: string; isDerived?: boolean }[] = [
   { key: 'soldCount', label: '月销量' },
   { key: 'soldSum', label: '月销售额' },
   { key: 'rating', label: '商品评分' },
   { key: 'reviewsCount', label: '评论数' },
-  { key: 'price', label: '价格' },
+  { key: 'price', label: '价格', unit: '卢布 ₽' },
+  { key: 'priceCny', label: '价格(人民币)', isDerived: true },
   { key: 'weightG', label: '重量(g)' },
   { key: 'createDays', label: '上架时间(天)' },
   { key: 'salesDynamics', label: '月周转动态(%)' },
@@ -26,7 +27,7 @@ export const RULE_DEFS: { key: string; label: string }[] = [
   { key: 'customClickRate', label: '商品点击率(%)' },
   { key: 'redemptionRate', label: '退货取消率(%)' },
   { key: 'offersCount', label: '跟卖人数' },
-  { key: 'offerMinPrice', label: '跟卖最低价' },
+  { key: 'offerMinPrice', label: '跟卖最低价', unit: '卢布 ₽' },
 ];
 
 /** 规则里能出现的发货模式 */

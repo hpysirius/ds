@@ -11,13 +11,21 @@
  *     只有登录 Ozon 卖家账号后第三方选品插件才会渲染，没登录时这些条件判 null（视为不命中）
  */
 
-/** 规则条件的字段定义（顺序即规则编辑器里的展示顺序，与选品插件的「更多规则条件」对齐） */
+/**
+ * 卢布 → 人民币近似汇率（1 ₽ ≈ 0.08 ¥）。
+ * 供「价格(人民币)」条件换算用；汇率有变动只改这一处即可。
+ */
+export const RUB_TO_CNY = 0.08;
+
+/** 规则条件的字段定义（顺序即规则编辑器里的展示顺序，与选品插件的「更多规则条件」对齐）
+ *  unit: 该条件输入框旁显示的单位提示（如价格用卢布）；isDerived: 是否为由其它字段派生的条件 */
 export const RULE_DEFS = [
   { key: 'soldCount', label: '月销量' },
   { key: 'soldSum', label: '月销售额' },
   { key: 'rating', label: '商品评分' },
   { key: 'reviewsCount', label: '评论数' },
-  { key: 'price', label: '价格' },
+  { key: 'price', label: '价格', unit: '卢布 ₽' },
+  { key: 'priceCny', label: '价格(人民币)', isDerived: true },
   { key: 'weightG', label: '重量(g)' },
   { key: 'createDays', label: '上架时间(天)' },
   { key: 'salesDynamics', label: '月周转动态(%)' },
@@ -34,7 +42,7 @@ export const RULE_DEFS = [
   { key: 'customClickRate', label: '商品点击率(%)' },
   { key: 'redemptionRate', label: '退货取消率(%)' },
   { key: 'offersCount', label: '跟卖人数' },
-  { key: 'offerMinPrice', label: '跟卖最低价' },
+  { key: 'offerMinPrice', label: '跟卖最低价', unit: '卢布 ₽' },
 ];
 
 /** pluginCard 的 key → 规则条件的 key（同名直接透传） */
@@ -79,6 +87,8 @@ export function extractMetrics(item) {
     salesSchema: String((item && item.salesSchema) || pc.salesSchema || '').toUpperCase(),
     brand: String((item && item.brand) || pc.brand || '').trim(),
   };
+  // 由卢布价格换算出的人民币价格（按 RUB_TO_CNY 近似汇率，保留 2 位小数）；价格缺失则无人民币价
+  m.priceCny = m.price != null ? Math.round(m.price * RUB_TO_CNY * 100) / 100 : null;
   for (const k of Object.keys(PC_MAP)) m[PC_MAP[k]] = num(pc[k]);
   // 重量：采集端已统一成克（支持 g/kg）；万一进来的是原始字符串（"1,2 кг"），这里再兜一次单位换算
   m.weightG = null;

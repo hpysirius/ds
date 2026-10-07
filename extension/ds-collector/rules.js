@@ -84,7 +84,7 @@ function buildCondRows(conds) {
   $('conds').innerHTML = RULE_DEFS.map(
     (d) => `
     <div class="cond">
-      <span>${d.label}</span>
+      <span>${d.label}${d.unit ? `（${d.unit}）` : ''}</span>
       <input type="text" data-cond="${d.key}" data-side="min" placeholder="最小值" value="${conds && conds[d.key] ? escapeHtml(conds[d.key].min ?? '') : ''}" />
       <b>至</b>
       <input type="text" data-cond="${d.key}" data-side="max" placeholder="最大值" value="${conds && conds[d.key] ? escapeHtml(conds[d.key].max ?? '') : ''}" />
