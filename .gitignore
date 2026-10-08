@@ -19,3 +19,6 @@ run/
 # 插件打包产物：由 scripts/pack-extension.sh 生成，deploy.sh 每次部署会自动重建
 frontend/public/plugin/*.zip
 frontend/public/plugin/plugin-info.json
+
+# browser-agent 运行时截图（排错用，不入仓）
+scripts/browser-agent/shots/

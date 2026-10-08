@@ -1,0 +1,15 @@
+{
+  "name": "ds-browser-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "连接本机真实 Chrome（CDP），像正常用户一样完成 Ozon 选品 → 1688 找同款 → 回填核价",
+  "scripts": {
+    "doctor": "node src/agent.mjs doctor",
+    "find": "node src/agent.mjs find",
+    "shot": "node src/agent.mjs shot"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.12.0"
+  }
+}

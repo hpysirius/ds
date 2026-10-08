@@ -77,3 +77,12 @@
 - npm registry 在本机不通，尽量零依赖实现（如已自写 CONNECT 代理 `sourcing.proxy.ts`）。也导致 `agent-browser` 之类工具装不上，无法做登录后截图。
 - macOS 无 `setsid`；`nohup ... &` 起的服务仍会在**本次工具调用结束时被杀**，起常驻服务只能用后台任务方式。
 - 校验前端页面内容别用 `curl 页面URL`：AppShell 是客户端组件，SSR 只输出「加载中…」。要 grep 构建产物 `.next/static/chunks/app/<route>/*.js` 或线上同名 chunk（加 `--compressed`）。
+
+## 浏览器 Agent 驱动真实 Chrome（2026-10-07 重要修正）
+- **新版 Chrome（154+）禁止在默认用户数据目录上开远程调试**：报 `DevTools remote debugging requires a non-default data directory`。旧说法「切勿加 --user-data-dir」已过时——现在**必须**加一个非默认 `--user-data-dir` 才能开 9222；把 `--user-data-dir` 显式指回默认路径也没用（Chrome 按路径判，不按是否显式指定）。
+- 已把用户默认 profile 复制到 `~/chrome-debug-profile`（含 1688/ds 登录态、插件、ds_token；复制后要删 SingletonLock/Cookie/Socket 三个锁文件）。启动命令（**必须用户自己在 Terminal 跑，WorkBuddy 代启不行**）：
+  `open -a "Google Chrome" --args --user-data-dir="$HOME/chrome-debug-profile" --remote-debugging-port=9222`
+- **WorkBuddy 的 shell 里 `open --args` 会吞参数**（pgrep 验证 Chrome 命令行无参）；二进制直启缺 GUI 权限会崩（需 --no-sandbox 才能起，但起的 Chrome 无显示器）。**无显示器/headless 的 Chrome，1688 图搜一律返回空**（图片上传成功但 0 结果卡片）→ 图搜必须用用户自己 Terminal 启动的 GUI Chrome。
+- 后端 /agent/doctor 探测 127.0.0.1:9222；用户自己终端启动的 GUI Chrome 能被它探测到（同机真实网络）。
+- **1688 图搜页流程（air.1688.com/kapp/1688-search/pc-image-search，2026-10-07 打通）**：
+  ① 上传图到唯一 file input `#img-search-upload`；② **上传后必须点「搜索图片」按钮**（class 是 hash，用可见文本"搜索图片"定位）才真正发起图搜，否则永远 0 结果；③ 结果卡片选择器 `[data-renderkey]`（形如 `1_0_p4p_hyhxmj_44237855048`，offerId = 末段数字），标题 `[class*=titleText]`、价格 `[class*=priceItem]`、店铺 `[class*=shopName]`、图 `img`；卡片**没有** detail.1688.com 链接，URL 要自建 `https://detail.1688.com/offer/{offerId}.html`；④ 候选图是 `cbu01.alicdn.com`，前端必须走 `proxyImageUrl`（防盗链）。

@@ -83,6 +83,15 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   const [saving, setSaving] = useState(false);
   const [booted, setBooted] = useState(false);
 
+  // ---------------- 浏览器 Agent 核价（一键图搜） ----------------
+  const [chromeReady, setChromeReady] = useState<boolean | null>(null);
+  const [agentSku, setAgentSku] = useState<string>('');
+  const [agentSell, setAgentSell] = useState<number | null>(null);
+  const [agentFinding, setAgentFinding] = useState(false);
+  const [agentCandidates, setAgentCandidates] = useState<any[] | null>(null);
+  const [agentApplying, setAgentApplying] = useState(false);
+  const [agentResult, setAgentResult] = useState<any | null>(null);
+
   useEffect(() => {
     if (!settings) return;
     form.setFieldsValue({
@@ -106,6 +115,14 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     probeLocalApi().then((ok) => setLocalReady(ok));
   }, []);
 
+  // 浏览器 Agent 用本机 Chrome 图搜，先确认调试端口（9222）已开
+  useEffect(() => {
+    http
+      .get('/agent/doctor')
+      .then((r) => setChromeReady(!!r.data?.chrome))
+      .catch(() => setChromeReady(null));
+  }, []);
+
   // ---------------- 选品 ----------------
   const searchProducts = async () => {
     setPicking(true);
@@ -123,6 +140,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
 
   const pickProduct = (p: any) => {
     setProduct(p);
+    setAgentSku(p.sku || '');
     setPickOpen(false);
     const dims = [p.lengthCm || 0, p.widthCm || 0, p.heightCm || 0].filter((n: number) => n > 0).sort((a, b) => b - a);
     form.setFieldsValue({
@@ -572,6 +590,84 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     }
   };
 
+  // ---------------- 浏览器 Agent 核价 ----------------
+  /** 阶段1：驱动本机 Chrome 打开 1688 图搜，返回候选同款（后端拉起 agent 子进程） */
+  const agentFind = async () => {
+    const sku = (agentSku || product?.sku || '').trim();
+    if (!sku) {
+      message.warning('请先填写 SKU（或从商品库选品）');
+      return;
+    }
+    setAgentFinding(true);
+    setAgentCandidates(null);
+    setAgentResult(null);
+    try {
+      const { data } = await http.post('/agent/find', { sku });
+      setAgentCandidates(data?.candidates || []);
+      if (!data?.candidates?.length) message.info('1688 没解析到候选，可能图搜结果还在加载或页面结构变化');
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || e.message);
+    } finally {
+      setAgentFinding(false);
+    }
+  };
+
+  /** 阶段2：前端点选某个同款 → 后端抓价/算价/生成定价记录，并预填回工作台 */
+  const agentPick = async (cand: any) => {
+    const sku = (agentSku || product?.sku || '').trim();
+    if (!sku) {
+      message.warning('缺少 SKU');
+      return;
+    }
+    setAgentApplying(true);
+    try {
+      const { data } = await http.post(
+        '/agent/apply',
+        { sku, offerUrl: cand.url, sellPrice: agentSell || undefined },
+        { params: storeParam },
+      );
+      setAgentResult(data);
+      const rec = data?.record;
+      if (rec) {
+        form.setFieldsValue({
+          sku: rec.sku,
+          name: rec.name,
+          purchaseCost: rec.purchaseCost,
+          weightKg: rec.weightKg,
+          lengthCm: rec.lengthCm,
+          widthCm: rec.widthCm,
+          heightCm: rec.heightCm,
+          sellPrice: rec.sellPrice,
+          sellPriceRub: rec.sellPriceRub,
+          exchangeRate: rec.exchangeRate,
+          labelFee: rec.labelFee,
+          commissionRate: Number((rec.commissionRate * 100).toFixed(2)),
+          agentRate: Number((rec.agentRate * 100).toFixed(2)),
+          withdrawRate: Number((rec.withdrawRate * 100).toFixed(2)),
+          country: rec.country,
+          vendor: rec.vendor,
+          channelId: rec.channelId,
+          shipMode: rec.shipMode,
+          logistics: rec.logistics,
+          shippingFee: rec.shippingFee,
+          billWeightKg: rec.billWeightKg,
+          supplyUrl: rec.supplyUrl,
+          retailUrl: rec.retailUrl,
+          imageUrl: rec.imageUrl,
+          offer1688Title: rec.offer1688Title,
+          weightSource: rec.weightSource,
+        });
+        setChannelId(rec.channelId);
+        runPrice(rec.channelId);
+        message.success(`已生成定价记录 #${rec.id}（毛利 ¥${money(rec.grossProfit)}）`);
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || e.message);
+    } finally {
+      setAgentApplying(false);
+    }
+  };
+
   const channelOptions = useMemo(
     () =>
       (calc?.list || []).map((r: any) => ({
@@ -842,6 +938,115 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
             <Form.Item name="sellPrice" hidden><InputNumber /></Form.Item>
             <Form.Item name="remark" hidden><Input /></Form.Item>
           </Form>
+        </Card>
+
+        {/* 浏览器 Agent 一键核价：点按钮 → 后端拉起 agent 子进程驱动本机 Chrome 图搜 → 这里点选同款 → 后端抓价算价落库 */}
+        <Card size="small" title="浏览器 Agent 一键核价（图搜）" style={{ marginTop: 12 }}>
+          <Alert
+            type={chromeReady === false ? 'warning' : 'info'}
+            showIcon
+            style={{ marginBottom: 10 }}
+            message={
+              chromeReady === false ? (
+                <>
+                  本机 Chrome 未开调试端口：请先在终端执行{' '}
+                  <code>open -a "Google Chrome" --args --user-data-dir="$HOME/chrome-debug-profile" --remote-debugging-port=9222</code>
+                  {' '}启动核价专用 Chrome（Chrome 154+ 必须指定非默认 --user-data-dir 才能开调试端口），否则无法驱动 1688 图搜。
+                </>
+              ) : chromeReady === true ? (
+                'Chrome 调试端口已就绪，可一键驱动你的浏览器去 1688 图搜'
+              ) : (
+                '正在检查本机 Chrome 调试端口…'
+              )
+            }
+          />
+          <Space wrap style={{ width: '100%' }}>
+            <Input
+              placeholder="Ozon SKU"
+              value={agentSku}
+              onChange={(e) => setAgentSku(e.target.value)}
+              style={{ width: 200 }}
+              addonBefore="SKU"
+            />
+            <InputNumber
+              placeholder="指定售价¥（可选）"
+              value={agentSell}
+              onChange={(v) => setAgentSell(v ?? null)}
+              style={{ width: 168 }}
+              min={0}
+              precision={2}
+            />
+            <Button type="primary" loading={agentFinding} onClick={agentFind}>
+              开始图搜（用我的 Chrome）
+            </Button>
+          </Space>
+
+          {agentFinding ? (
+            <div style={{ marginTop: 12, color: '#666', fontSize: 13 }}>
+              <Spin size="small" /> <span style={{ marginLeft: 8 }}>
+                正在驱动你的 Chrome 打开 1688 图搜页、上传主图、等待识别…（约 10–40 秒）
+              </span>
+            </div>
+          ) : null}
+
+          {agentCandidates && agentCandidates.length ? (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 13, marginBottom: 8, color: '#555' }}>
+                在 1688 找到 {agentCandidates.length} 个候选，点「选这个并核价」挑真同款：
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                {agentCandidates.slice(0, 24).map((c: any) => (
+                  <Card
+                    key={c.offerId}
+                    size="small"
+                    hoverable
+                    style={{ width: 216 }}
+                    cover={
+                      c.img ? (
+                        <img
+                          src={proxyImageUrl(c.img)}
+                          alt=""
+                          style={{ height: 116, objectFit: 'cover', background: '#f5f5f5' }}
+                          onError={(e: any) => {
+                            e.currentTarget.style.visibility = 'hidden';
+                          }}
+                        />
+                      ) : null
+                    }
+                  >
+                    <div style={{ fontSize: 12, height: 32, overflow: 'hidden' }}>{c.title || '(无标题)'}</div>
+                    <div style={{ fontSize: 13, color: '#cf1322', fontWeight: 600, marginBottom: 4 }}>
+                      ¥{c.price || '?'}
+                    </div>
+                    <Button size="small" block type="primary" loading={agentApplying} onClick={() => agentPick(c)}>
+                      选这个并核价
+                    </Button>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {agentResult ? (
+            <Alert
+              type="success"
+              showIcon
+              style={{ marginTop: 12 }}
+              message={`已生成定价记录 #${agentResult.record?.id}`}
+              description={
+                <div style={{ fontSize: 12, lineHeight: 1.8 }}>
+                  <div>
+                    渠道：{agentResult.channel?.name} · {agentResult.channel?.shipMode}
+                  </div>
+                  <div>
+                    运费 ¥{money(agentResult.channel?.shippingFee)} · 毛利 ¥{money(agentResult.record?.grossProfit)} · 净利 ¥
+                    {money(agentResult.record?.netProfit)} · 利润率 {pct(agentResult.record?.profitRate)}
+                  </div>
+                  <div style={{ color: '#888' }}>右侧「定价结果」已按此预填，可微调后再次保存。</div>
+                </div>
+              }
+            />
+          ) : null}
         </Card>
       </Col>
 
