@@ -15,6 +15,7 @@ import { ScreeningModule } from './modules/screening/screening.module';
 import { StatsModule } from './modules/stats/stats.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { AgentModule } from './modules/agent/agent.module';
+import { SelfPurchaseModule } from './modules/self-purchase/self-purchase.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -35,6 +36,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     StatsModule,
     PricingModule,
     AgentModule,
+    SelfPurchaseModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

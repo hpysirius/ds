@@ -65,6 +65,7 @@
         border-radius: 6px; font-size: 12px; background: #fff; outline: none;
       }
       .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+      .grid.grid2 { grid-template-columns: 1fr 1fr; }
       .grid label { font-size: 11px; color: var(--muted); display: block; }
       .grid input {
         width: 100%; min-width: 0; padding: 5px 6px; border: 1px solid var(--line);
@@ -164,6 +165,50 @@
       <div class="hint">
         在 <b>1688 货品页</b>点「抓当前 1688 页」，选规格后可微调数值，再点「回填到核价页」——
         会自动打开/刷新你填的地址，并把成本、重量、长宽高填进表单。
+      </div>
+
+      <div class="sep">📝 记一笔（自采购备忘录）</div>
+
+      <div class="row">
+        <input id="memoName" type="text" placeholder="商品名称 / 备注（选填）" />
+        <button id="memoFromPage" title="自动识别当前页：1688 页填「货源链接」，Ozon 页填「Ozon 链接」，并带上商品名">取当前页</button>
+      </div>
+
+      <div class="row">
+        <input id="memoSku" type="text" placeholder="SKU / Ozon 商品 id（点「取当前页」自动解析）" />
+      </div>
+
+      <div class="row">
+        <input id="memoUrl" type="text" placeholder="1688 货源链接 https://detail.1688.com/offer/xxx.html" />
+      </div>
+
+      <div class="row">
+        <input id="memoOzon" type="text" placeholder="Ozon 链接（选填，不参与比价）https://www.ozon.ru/product/xxx" />
+      </div>
+
+      <div class="row">
+        <button id="memoGrabOzon" style="flex:1">抓 Ozon 页（带跟卖价）</button>
+        <button id="memoGrab1688" style="flex:1">抓 1688 页（成本/尺寸）</button>
+      </div>
+
+      <div class="grid">
+        <label>成本 ¥<input id="memoCost" type="number" step="0.01" /></label>
+        <label>重量 kg<input id="memoWt" type="number" step="0.001" /></label>
+        <label>跟卖价 <span id="memoRetailSym">₽</span><input id="memoRetail" type="number" step="0.01" title="Ozon 页面上的在售价；抓到的是 ¥ 时这里会切成 ¥，后端统一折成 ₽ 存" /></label>
+        <label>长 cm<input id="memoL" type="number" step="0.1" /></label>
+        <label>宽 cm<input id="memoW" type="number" step="0.1" /></label>
+        <label>高 cm<input id="memoH" type="number" step="0.1" /></label>
+      </div>
+
+      <div class="row" style="margin-top:6px">
+        <button id="memoSave" class="primary" style="flex:1">记一笔 → 存到「自采购」</button>
+      </div>
+
+      <div class="hint">
+        「取当前页」会<b>自动分辨站点</b>：在 <b>1688</b> 页填「货源链接」，在 <b>Ozon</b> 页填「Ozon 链接」，并带上商品名 + SKU + <b>跟卖价</b>。<br />
+        在 <b>Ozon 商品页</b>点「抓 Ozon 页」会把在售价（跟卖价）抓下来；在 <b>1688 货品页</b>点「抓 1688 页」会把成本、重量、尺寸与包装信息一并抓下来。<br />
+        ⚠ 跟卖价按 <b>页面原币种</b>上报（Ozon 有时会显示 ¥），后端统一折成 ₽ 存，避免像商品库那样把 ¥ 当 ₽。<br />
+        同一个 <b>SKU 只会有一条记录</b>：先记 1688、再记 Ozon 会自动合并（只补空字段）。存进后台<b>「自采购」</b>页，跟采集比价的表完全分开。
       </div>
     </div>
     <script src="popup.js"></script>

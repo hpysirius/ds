@@ -344,5 +344,276 @@ chrome.storage.local.get(['pricingUrl']).then((s) => {
 // 静默执行：同步失败只在日志里留一行，不影响采集。
 send({ type: 'DS_SYNC_RULES' });
 
+/* ─────────── 记一笔（自采购备忘录）─────────── */
+
+let memoPackText = ''; // 最近一次从 1688 抓到的「包装信息原文」，保存时一并上报
+let memoOzonData = null; // 最近一次从 Ozon 抓到的数据（跟卖价 / 主图 …），保存时一并上报
+
+/**
+ * 从 Ozon 链接解析 SKU（与后端 extractOzonSku 同逻辑）。
+ * SKU 是这条记录关联 Ozon ↔ 1688 的标识，能自动带出就别手填。
+ */
+function extractOzonSku(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    const q = u.searchParams.get('sku');
+    if (q && /^\d{4,20}$/.test(q)) return q;
+    const seg = (u.pathname || '').split('/').filter(Boolean).pop() || '';
+    const m = seg.match(/(\d{4,20})$/);
+    if (m) return m[1];
+  } catch (e) {
+    /* 不是完整 URL，走下面兜底 */
+  }
+  const q2 = raw.match(/[?&]sku=(\d{4,20})/);
+  if (q2) return q2[1];
+  const seg2 = raw.replace(/[?#].*$/, '').split('/').filter(Boolean).pop() || '';
+  const m2 = seg2.match(/(\d{4,20})$/);
+  return m2 ? m2[1] : null;
+}
+
+/**
+ * 站点识别：决定「取当前页」把地址填进哪个框。
+ * ⚠ 必须区分！Ozon 地址填进「1688 货源链接」= 存错字段（2026-10-09 用户报）。
+ */
+function detectSite(url) {
+  let host = '';
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch (e) {
+    host = '';
+  }
+
+  // 先排除 ds 自己的页面 —— 线上域名 ozon.qinxianty.com 里也含 "ozon"，别误判成 Ozon 商品页
+  const isSelf =
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '114.132.99.141' ||
+    /(^|\.)qinxianty\.com$/.test(host);
+  if (isSelf) return 'self';
+
+  // 严格按域名后缀判断，不用 includes（防误判）
+  const isOzon = /(^|\.)ozon\.(ru|by|kz|uz|ge|am|com)$/.test(host);
+  const is1688 =
+    /(^|\.)1688\.com$/.test(host) ||
+    /(^|\.)(taobao|tmall|alibaba|alicdn)\.(com|cn)$/.test(host);
+
+  if (isOzon) return 'ozon';
+  if (is1688) return '1688';
+  return 'other';
+}
+
+/**
+ * 抓当前 Ozon 商品页的「跟卖价」（页面在售价）并填进表单。
+ *
+ * ⚠ 币种：Ozon 会按账号语言把价格渲染成 ¥ —— 这里**原样**把数值 + 符号填进表单
+ * （符号显示在「跟卖价」标签上），由后端按汇率折成 ₽ 存库，别在这里自作主张换算。
+ */
+async function grabOzonPrice() {
+  const r = await send({ type: 'DS_COLLECT_OZON' });
+  if (!r.ok) throw new Error(r.error || '采集失败');
+  const d = r.result || {};
+  if (d.price == null) throw new Error('没读到价格');
+  memoOzonData = d;
+  $('memoRetail').value = d.price;
+  $('memoRetailSym').textContent = d.symbol === '¥' ? '¥' : '₽';
+  if (d.title && !$('memoName').value) $('memoName').value = String(d.title).slice(0, 200);
+  if (d.url) $('memoOzon').value = d.url;
+  if (d.sku && !$('memoSku').value) $('memoSku').value = d.sku;
+  return d;
+}
+
+// 「取当前页」：自动识别当前页是 Ozon 还是 1688，把地址填进对应字段（标题顺带填入）
+$('memoFromPage').onclick = async () => {
+  const btn = $('memoFromPage');
+  const orig = btn.textContent;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) return;
+    const url = tab.url || '';
+    if (!url) return;
+
+    const site = detectSite(url);
+    if (site === 'self') {
+      btn.textContent = '当前是 ds 后台页';
+      return; // 别把自家域名当商品链接填进去
+    }
+    // 标题：去掉平台后缀，只留商品名（1688 是「xxx - 阿里巴巴」；Ozon 是「xxx | Ozon」）
+    let title = (tab.title || '').trim();
+    if (site === '1688') title = title.replace(/\s*[-|–—]\s*(1688|阿里巴巴|Alibaba).*$/i, '').trim();
+    if (site === 'ozon') title = title.replace(/\s*[-|–—]\s*(Ozon|OZON|Озон|ОЗОН).*$/i, '').trim();
+
+    if (site === 'ozon') {
+      $('memoOzon').value = url; // Ozon 页面 → 填「Ozon 链接」
+      if (title && !$('memoName').value) $('memoName').value = title.slice(0, 200);
+      // 顺手把 SKU 解析出来（没解析到就留空让人手填）
+      const sku = extractOzonSku(url);
+      if (sku && !$('memoSku').value) $('memoSku').value = sku;
+      // 在 Ozon 页「取当前页」就顺带把跟卖价带上（读不到不影响填链接，静默略过）
+      let tail = sku ? `✓ SKU ${sku}` : '✓ 已填 Ozon 链接';
+      try {
+        const d = await grabOzonPrice();
+        tail += ` · ${d.price}${d.symbol || ''}`;
+      } catch (e) {
+        /* 没读到价格就算了，别挡着填链接 */
+      }
+      btn.textContent = tail;
+    } else {
+      $('memoUrl').value = url; // 1688 / 淘宝 / 天猫 → 填「货源链接」
+      if (title && !$('memoName').value) $('memoName').value = title.slice(0, 200);
+      btn.textContent = site === '1688' ? '✓ 已填 1688 货源' : '✓ 已填到货源链接';
+    }
+  } catch (e) {
+    btn.textContent = '取当前页失败';
+  } finally {
+    setTimeout(() => {
+      btn.textContent = orig;
+    }, 1500);
+  }
+};
+
+/** 「抓当前 Ozon 页」：把在售价（跟卖价）+ 标题 + 链接 + SKU 填进备忘录表单 */
+$('memoGrabOzon').onclick = async () => {
+  const btn = $('memoGrabOzon');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '抓 Ozon 中…';
+  try {
+    const d = await grabOzonPrice();
+    btn.textContent = `✓ ${d.price}${d.symbol || ''}`;
+  } catch (e) {
+    btn.textContent = '抓取失败';
+    alert(`抓 Ozon 失败：${(e && e.message) || e}`);
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => {
+      btn.textContent = orig;
+    }, 1800);
+  }
+};
+
+/** 「抓当前 1688 页」：把货品信息填进备忘录表单（成本 / 重量 / 尺寸 / 包装） */
+$('memoGrab1688').onclick = async () => {
+  const btn = $('memoGrab1688');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '抓 1688 中…';
+  try {
+    const r = await send({ type: 'DS_COLLECT_1688' });
+    if (!r.ok) throw new Error(r.error || '采集失败');
+    const d = r.result || {};
+    supply1688 = d; // 与「回填核价页」区共享，保存时按「抓取录入」留痕
+    const skus = d.skus || [];
+    // 默认选最便宜的那个规格（通常是单件最低配）
+    let s = skus[0];
+    let best = Infinity;
+    skus.forEach((x) => {
+      if (x.price != null && x.price < best) {
+        best = x.price;
+        s = x;
+      }
+    });
+
+    if (d.title && !$('memoName').value) $('memoName').value = String(d.title).slice(0, 200);
+    if (d.offerUrl) $('memoUrl').value = d.offerUrl;
+    if (s) {
+      if (s.price != null) $('memoCost').value = Number(s.price);
+      if (s.weightG != null) $('memoWt').value = Number((Number(s.weightG) / 1000).toFixed(4));
+      // 1688 没填尺寸时是占位 1×1×1，别填进去误导
+      $('memoL').value = s.lengthCm != null && s.lengthCm > 1 ? s.lengthCm : '';
+      $('memoW').value = s.widthCm != null && s.widthCm > 1 ? s.widthCm : '';
+      $('memoH').value = s.heightCm != null && s.heightCm > 1 ? s.heightCm : '';
+    }
+
+    // 拼一份包装信息原文（存进 self_purchases.packageText）
+    const pk = d.pack || {};
+    const bits = [];
+    if (pk.weightG != null) bits.push(`${pk.weightG}g`);
+    if (pk.lengthCm && pk.widthCm && pk.heightCm) bits.push(`${pk.lengthCm}*${pk.widthCm}*${pk.heightCm}cm`);
+    memoPackText = bits.join(' ');
+
+    btn.textContent = `✓ 抓到 ${skus.length} 个规格`;
+  } catch (e) {
+    btn.textContent = '抓取失败';
+    alert(`抓 1688 失败：${(e && e.message) || e}`);
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => {
+      btn.textContent = orig;
+    }, 1800);
+  }
+};
+
+$('memoSave').onclick = async () => {
+  const name = $('memoName').value.trim();
+  const supplyUrl = $('memoUrl').value.trim();
+  const retailUrl = $('memoOzon').value.trim();
+  const sku = $('memoSku').value.trim();
+  if (!name && !supplyUrl && !retailUrl && !sku) {
+    alert('至少填「SKU / 商品名称 / 1688 货源链接 / Ozon 链接」其中一个');
+    return;
+  }
+
+  const btn = $('memoSave');
+  btn.disabled = true;
+  btn.textContent = '记一笔中…';
+  try {
+    const payload = {
+      sku: sku || undefined,
+      name: name || undefined,
+      supplyUrl: supplyUrl || undefined,
+      retailUrl: retailUrl || undefined,
+    };
+    const cost = $('memoCost').value;
+    const wt = $('memoWt').value;
+    if (cost !== '') payload.purchaseCost = Number(cost);
+    if (wt !== '') {
+      payload.weightKg = Number(wt);
+      payload.weightText = `${wt}kg`;
+    }
+    // 尺寸（抓 1688 来的或手填）
+    const l = $('memoL').value;
+    const w = $('memoW').value;
+    const h = $('memoH').value;
+    if (l !== '') payload.lengthCm = Number(l);
+    if (w !== '') payload.widthCm = Number(w);
+    if (h !== '') payload.heightCm = Number(h);
+    if (l !== '' || w !== '' || h !== '') payload.sizeText = `${l || 0}*${w || 0}*${h || 0}`;
+    if (memoPackText) payload.packageText = memoPackText;
+    // 跟卖价：连币种符号一起上报（Ozon 有时渲染成 ¥），后端统一折成 ₽ 存
+    const rp = $('memoRetail').value;
+    if (rp !== '') {
+      payload.retailPrice = Number(rp);
+      payload.retailPriceSymbol = $('memoRetailSym').textContent === '¥' ? '¥' : '₽';
+    }
+    if (memoOzonData && memoOzonData.imageUrl) payload.imageUrl = memoOzonData.imageUrl;
+    // 抓过 1688 → 让后端记 caughtAt（采购留痕）
+    if (supply1688) payload.fromCapture = true;
+    const r = await send({ type: 'DS_MEMO', payload });
+    if (!r.ok) throw new Error(r.error || '保存失败');
+    // 同 SKU 会被后端合并进已有记录（只补空字段），提示要说明白
+    const merged = !!(r.result && r.result.merged);
+    btn.textContent = merged ? '✓ 已合并到同 SKU 记录' : '✓ 已记一笔';
+    // 清掉输入，方便接着记下一条
+    ['memoSku', 'memoName', 'memoUrl', 'memoOzon', 'memoCost', 'memoWt', 'memoRetail', 'memoL', 'memoW', 'memoH'].forEach(
+      (id) => {
+        $(id).value = '';
+      },
+    );
+    $('memoRetailSym').textContent = '₽';
+    memoPackText = '';
+    memoOzonData = null;
+    supply1688 = null;
+  } catch (e) {
+    alert(`记一笔失败：${e.message}`);
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = '记一笔 → 存到「自采购」';
+    }, 1200);
+  }
+};
+
 refresh();
 timer = setInterval(refresh, 2000);

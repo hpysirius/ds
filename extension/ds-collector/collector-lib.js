@@ -446,6 +446,118 @@ export function collectList() {
   return items;
 }
 
+/**
+ * 抓 Ozon 商品页的「跟卖价」（当前在售价）+ 币种符号，顺带把标题 / 主图 / SKU 带回来。
+ *
+ * ⚠ 币种口径（2026-10-09 查实）：Ozon 会按账号语言把价格渲染成 **¥**（人民币），
+ *   早期版本直接把 ¥ 数值当卢布入库，导致线上 608 条价格整体错一个汇率。
+ *   所以这里必须连符号一起返回：
+ *     ① 页面上含 ₽ 的价格文本 → 最可信，直接采用（一定是卢布）
+ *     ② JSON-LD 的 offers.price + priceCurrency（RUB / CNY 明确标注）
+ *     ③ 只剩 ¥ 文本 → 原样返回数值 + 符号 '¥'，由后端按汇率折成 ₽
+ *
+ * 同样会被序列化后在页面上下文执行：**不能引用外部变量**。
+ */
+export function collectOzonRetail() {
+  const out = { ok: false, price: null, symbol: null, title: '', imageUrl: '', sku: null };
+  const txt = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  const num = (v) => {
+    if (v == null) return null;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+    return isNaN(n) ? null : n;
+  };
+  /** "1 299 ₽" / "25,13 ¥" → { value, symbol }（俄语小数是逗号，千分位是空格） */
+  const parse = (t) => {
+    const m = String(t || '').match(/(\d[\d\s\u00a0]*)(?:[.,](\d{1,2}))?\s*([₽¥])/);
+    if (!m) return null;
+    const whole = String(m[1]).replace(/[\s\u00a0]/g, '');
+    const v = num(m[2] ? whole + '.' + m[2] : whole);
+    return v == null ? null : { value: v, symbol: m[3] };
+  };
+
+  // ① JSON-LD（priceCurrency 明确标了币种，是最可靠的元数据）
+  let ldPrice = null;
+  let ldSymbol = null;
+  try {
+    const lds = document.querySelectorAll('script[type="application/ld+json"]');
+    for (let i = 0; i < lds.length; i++) {
+      let j = null;
+      try { j = JSON.parse(lds[i].textContent || ''); } catch (e) { continue; }
+      const arr = Array.isArray(j) ? j : [j];
+      for (let k = 0; k < arr.length; k++) {
+        const o = arr[k];
+        if (!o || o['@type'] !== 'Product') continue;
+        if (o.name && !out.title) out.title = txt(o.name);
+        if (o.image && !out.imageUrl) {
+          out.imageUrl = Array.isArray(o.image) ? String(o.image[0]) : String(o.image);
+        }
+        const of = o.offers ? (Array.isArray(o.offers) ? o.offers[0] : o.offers) : null;
+        if (of && of.price != null && ldPrice == null) {
+          ldPrice = num(of.price);
+          const cur = String(of.priceCurrency || '').toUpperCase();
+          ldSymbol = cur === 'CNY' ? '¥' : cur === 'RUB' ? '₽' : null;
+        }
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  // ② DOM 价格：只在「价格容器」里找，再退到全页的叶子节点，避免抓到无关文本
+  const inPriceBox = (el) =>
+    !!(el.closest && el.closest('[data-widget*="webPrice"],[class*="webPrice"],[class*="priceBlock"],[class*="price"]'));
+  const scan = (needRub) => {
+    const nodes = document.querySelectorAll('span,div');
+    let fallback = null;
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (el.children && el.children.length > 0) continue; // 只看叶子文本
+      const p = parse(txt(el.textContent));
+      if (!p || p.value == null) continue;
+      if (needRub && p.symbol !== '₽') continue;
+      if (inPriceBox(el)) return p; // 价格容器里的优先
+      if (!fallback) fallback = p;
+    }
+    return fallback;
+  };
+
+  const rub = scan(true);
+  if (rub) {
+    out.price = rub.value;
+    out.symbol = '₽';
+  } else if (ldPrice != null) {
+    out.price = ldPrice;
+    out.symbol = ldSymbol;
+  } else {
+    const any = scan(false);
+    if (any) {
+      out.price = any.value;
+      out.symbol = any.symbol; // 大概率是 ¥ —— 交给后端按汇率折成 ₽
+    }
+  }
+
+  if (!out.title) {
+    const h1 = document.querySelector('h1');
+    if (h1) out.title = txt(h1.innerText || h1.textContent);
+    if (!out.title) out.title = txt(document.title || '');
+  }
+  if (!out.imageUrl) {
+    const m = document.querySelector('meta[property="og:image"]');
+    if (m) out.imageUrl = txt(m.getAttribute('content'));
+  }
+  try {
+    const u = new URL(location.href);
+    const q = u.searchParams.get('sku');
+    if (q && /^\d{4,20}$/.test(q)) out.sku = q;
+    else {
+      const seg = (u.pathname || '').split('/').filter(Boolean).pop() || '';
+      const mm = seg.match(/(\d{4,20})$/);
+      if (mm) out.sku = mm[1];
+    }
+  } catch (e) { /* ignore */ }
+
+  out.ok = out.price != null;
+  return out;
+}
+
 /** 列表页往下滚一屏（配合无限滚动加载更多商品） */
 export function scrollDown() {
   const before = document.body.scrollHeight;

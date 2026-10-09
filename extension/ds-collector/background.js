@@ -10,7 +10,7 @@
  *   2. 批量采集：点「批量采集」→ 从 ds 后端拉待补清单 → 复用同一个标签页逐个访问并上报
  *      （已补上的商品会自动从待补清单里消失，所以中断后重跑天然是"断点续跑"，不会重复劳动）
  */
-import { collectProduct, probeReady, collectList, scrollDown } from './collector-lib.js';
+import { collectProduct, probeReady, collectList, scrollDown, collectOzonRetail } from './collector-lib.js';
 import { applyRulesToItem, passesFilter } from './rules-lib.js';
 
 /**
@@ -116,6 +116,32 @@ async function syncRules() {
     await log(`⚠ 采集规则同步到后台失败：${String((e && e.message) || e).slice(0, 90)}（不影响采集）`);
     return { ok: false, error: String((e && e.message) || e).slice(0, 120) };
   }
+}
+
+/**
+ * 「记一笔」备忘录：把用户手填 / 粘贴的 1688 货源存成一条「自采购」记录。
+ *
+ * 与采集商品是两张独立的表：这里不做 Ozon 跟卖、不做比价，
+ * 只记「自己觉得好卖」的品，之后到后台「自采购」页算物流和定价。
+ * 接口是 @Public，靠 buildHeaders 带上的登录 token 归到员工所在店铺。
+ */
+async function saveMemo(payload) {
+  const api = await getApi();
+  const res = await safeFetch(`${api}/self-purchase/memo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const m = (json && json.message) || `HTTP ${res.status}`;
+    throw new Error(Array.isArray(m) ? m.join('；') : String(m));
+  }
+  // 后端遇到同 SKU 会合并进已有记录（不新建），日志里区分开，免得以为没记上
+  const merged = !!(json && json.merged);
+  const label = (payload && (payload.sku || payload.name || payload.supplyUrl)) || '（无名）';
+  await log((merged ? `🔗 同 SKU 已合并：${label}` : `📝 已记一笔：${label}`).slice(0, 120));
+  return json || {};
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -333,6 +359,23 @@ async function savePackCache(offerId, pack) {
   }
   await chrome.storage.local.set({ dsPackCache: cache });
   return true;
+}
+
+/**
+ * 在当前（Ozon）标签页里抓「跟卖价」—— 页面在售价 + 币种符号，顺带带回标题 / 主图 / SKU。
+ *
+ * 「记一笔」自采购时用它把 Ozon 在售价一并记下来（后端按符号折成 ₽ 存），
+ * 这样自采购页能直接拿定价跟市场价对比，不用再回到 Ozon 页面看。
+ */
+async function collectOzonPrice() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) throw new Error('没有活动的标签页');
+  if (!/\.ozon\.(ru|by|kz|uz|ge|am|com)/i.test(tab.url || '')) {
+    throw new Error('当前页面不是 Ozon 商品页。请先打开商品页，再点这个按钮');
+  }
+  const res = await evalInTab(tab.id, collectOzonRetail);
+  if (!res || res.price == null) throw new Error('没读到价格：请确认页面已加载完成（可刷新后重试）');
+  return { ...res, url: tab.url || '' };
 }
 
 /**
@@ -750,8 +793,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         case 'DS_COLLECT_1688':
           sendResponse({ ok: true, result: await collect1688() });
           break;
+        case 'DS_COLLECT_OZON':
+          sendResponse({ ok: true, result: await collectOzonPrice() });
+          break;
         case 'DS_SYNC_RULES':
           sendResponse({ ok: true, result: await syncRules() });
+          break;
+        case 'DS_MEMO':
+          sendResponse({ ok: true, result: await saveMemo(msg.payload || {}) });
           break;
         case 'DS_SAVE_PACK':
           sendResponse({ ok: true, saved: await savePackCache(msg.offerId, msg.pack || {}) });

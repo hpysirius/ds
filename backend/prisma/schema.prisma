@@ -54,6 +54,7 @@ model Store {
   collectTasks   CollectTask[]
   products       Product[]
   pricingRecords PricingRecord[]
+  selfPurchases  SelfPurchase[]
   filterPresets  FilterPreset[]
   screeningRuns  ScreeningRun[]
   collectRules   CollectRule[]
@@ -374,6 +375,88 @@ model PricingRecord {
   @@index([sku])
   @@index([excelRef])
   @@map("pricing_records")
+}
+
+// ============ 自采购（选购备忘录）============
+/// 与「跟单比价」采集库完全隔离的独立表。
+/// 场景：自己看中什么好卖就记一笔 —— 只存 1688 货源链接 + 采购成本 + 规格，
+/// 不做 Ozon 跟卖/竞品比价；「算物流、算定价」复用核价引擎（PricingService.price）。
+model SelfPurchase {
+  id  Int     @id @default(autoincrement())
+  sku String? @db.VarChar(40) // Ozon SKU（Ozon ↔ 1688 的关联主键；不贴链接也能从 Ozon 链接自动解析）
+  name String? @db.VarChar(200) // 产品备注 / 自选商品名（xls「产品备注」列）
+
+  /// 上架状态：editing 编辑中 / listed 已上架 / delisted 已下架
+  status String @default("editing") @db.VarChar(20)
+
+  supplyUrl String? @db.VarChar(1000) // 1688 货源链接（主，xls「货源链接」列）
+  retailUrl String? @db.VarChar(1000) // Ozon 链接（选填，只记录想卖的品，不参与比价）
+  imageUrl  String? @db.VarChar(1000)
+
+  /// Ozon 跟卖价：插件在 Ozon 商品页采集时抓到的在售价，统一按卢布存（retailPriceCny 是同价的元口径）
+  /// ⚠ 页面可能把价格渲染成 ¥（人民币），插件会一并把币种符号上报，后端按汇率折算成 ₽ 存这里
+  retailPriceRub Float?
+  retailPriceCny Float?
+  retailPriceAt  DateTime? // 最近一次抓到 / 更新跟卖价的时间
+
+  // ---- 上架文案（俄语，手工填；页面提供一键复制，方便直接粘到 Ozon 后台）----
+  titleRu String? @db.VarChar(500) // 俄语标题
+  descRu  String? @db.Text //        俄语内容 / 描述
+  tagsRu  String? @db.VarChar(500) // 俄语标签（逗号 / 空格分隔）
+
+  packageText String? @db.VarChar(200) // 包装信息原文（1688「件重尺」抓取：如 1件 0.35kg 30*20*5）
+
+  purchaseCost Decimal? @db.Decimal(12, 2) // 采购成本（元）
+
+  // ---- 规格：数值列用于算价，*Text 保留手填原文（如 300g / 40*30*3）----
+  weightKg   Decimal? @db.Decimal(10, 4)
+  lengthCm   Decimal? @db.Decimal(10, 2)
+  widthCm    Decimal? @db.Decimal(10, 2)
+  heightCm   Decimal? @db.Decimal(10, 2)
+  weightText String?  @db.VarChar(40)
+  sizeText   String?  @db.VarChar(80)
+
+  // ---- 物流渠道（算价用，留空则用核价默认参数）----
+  country     String? @db.VarChar(20) // RU / BY / KZ / KG
+  vendor      String? @db.VarChar(20) // GUOO / XY
+  category    String? @db.VarChar(30) // Extra Small / Budget / Small / Big …
+  channelId   Int?
+  channelName String? @db.VarChar(200)
+  shipMode    String? @db.VarChar(30)
+  logistics   String? @db.VarChar(30) // 旧表「物流方式」：陆空 / 陆运 …
+
+  // ---- 核价结果快照（点「算定价」后回写，列表直接展示）----
+  sellPrice    Decimal? @db.Decimal(12, 2) // 定价（元）
+  sellPriceRub Decimal? @db.Decimal(12, 2) // 定价（卢布）
+  shippingFee  Decimal? @db.Decimal(12, 2) // 国际运费（元）
+  billWeightKg Decimal? @db.Decimal(10, 4) // 计费重量
+  grossProfit  Decimal? @db.Decimal(12, 2) // 毛利润
+  netProfit    Decimal? @db.Decimal(12, 2) // 净利润
+  profitRate   Decimal? @db.Decimal(10, 4) // 利润率
+  markupRate   Decimal? @db.Decimal(6, 4) // 成本加价率
+  pricedAt     DateTime? // 最近一次核价时间
+
+  // ---- 留痕：采购 → 核价 → 上架 的时间线 ----
+  caughtAt DateTime? // 最近一次从 1688 抓取的时间（插件「抓当前 1688 页」时写）
+  listedAt DateTime? // 最近一次上架时间
+  statusAt DateTime? // 最近一次状态变更时间
+
+  remark String? @db.VarChar(500)
+  /// manual = 后台页面录入；plugin = 插件「记一笔」备忘录上报
+  source String  @default("manual") @db.VarChar(20)
+
+  userId    Int?
+  storeId   Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: SetNull)
+
+  @@index([storeId])
+  @@index([sku])
+  @@index([storeId, status])
+  @@index([createdAt])
+  @@map("self_purchases")
 }
 
 // ============ 核价默认参数（单条记录）============

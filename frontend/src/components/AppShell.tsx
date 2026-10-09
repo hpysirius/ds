@@ -11,6 +11,7 @@ import {
   FilterOutlined,
   ReadOutlined,
   SettingOutlined,
+  ShoppingOutlined,
   TagsOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -134,6 +135,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     add('/', '数据概览', <DashboardOutlined />);
     add('/collect', '数据采集', <CloudDownloadOutlined />);
     add('/products', '商品库', <AppstoreOutlined />);
+    // 自采购（选购备忘录）：与商品库/跟单比价并列的独立表，自己觉得好卖就记一笔，不做比价。
+    // 同样没登记进 ROUTE_PERMISSION → 对所有登录用户可见。
+    add('/self-purchase', '自采购', <ShoppingOutlined />);
     // 规则标签管理：/rules 没登记进 ROUTE_PERMISSION，所以这里对所有登录用户都显示
     // （插件采集规则同步上来的标签规则，是商品库的附属信息）
     add('/rules', '规则标签管理', <TagsOutlined />);
