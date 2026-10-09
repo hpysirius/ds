@@ -379,12 +379,24 @@ export default function SelfPurchasePage() {
       title: '定价(¥)',
       key: 'price',
       width: 120,
-      render: (_: any, r: any) => (
-        <Space direction="vertical" size={0}>
-          <span>{money(r.sellPrice, '¥')}</span>
-          <span style={{ color: '#8c8c8c' }}>{money(r.sellPriceRub, '₽')}</span>
-        </Space>
-      ),
+      render: (_: any, r: any) => {
+        // 定价高于跟卖价 → 标红（跟卖价缺失则不变色），与「定价记录」页同一套判断
+        const red =
+          r.retailPriceRub > 0 &&
+          (r.sellPriceRub > 0 ? r.sellPriceRub > r.retailPriceRub : r.sellPrice > r.retailPriceCny);
+        return (
+          <Space direction="vertical" size={0}>
+            <span style={red ? { color: '#cf1322', fontWeight: 600 } : undefined}>
+              {money(r.sellPrice, '¥')}
+            </span>
+            <span
+              style={red ? { color: '#cf1322', fontWeight: 600 } : { color: '#8c8c8c' }}
+            >
+              {money(r.sellPriceRub, '₽')}
+            </span>
+          </Space>
+        );
+      },
     },
     {
       title: '跟卖价(₽)',
