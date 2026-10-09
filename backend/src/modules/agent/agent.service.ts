@@ -29,8 +29,22 @@ export class AgentService {
     private readonly sourcing: SourcingService,
   ) {}
 
+  /**
+   * 总开关：AGENT_ENABLED=false 时关闭整个浏览器 Agent。
+   * 服务器（云）部署下后端连不到用户本机的 Chrome（127.0.0.1:9222 是服务器自己），
+   * 且无头环境 1688 图搜一律返回空 —— 这种部署必须关掉，否则点了只会报错。
+   */
+  get enabled(): boolean {
+    return String(process.env.AGENT_ENABLED ?? 'true').toLowerCase() !== 'false';
+  }
+
   /** 驱动本机 Chrome 打开 1688 图搜，返回候选货源（不含落库） */
   async findCandidates(sku: string, authToken?: string): Promise<any> {
+    if (!this.enabled) {
+      throw new BadRequestException(
+        '浏览器 Agent 已在当前部署中关闭：该功能需要 ds 后端与你的 Chrome 在同一台机器上（服务器模式无法驱动你本机的浏览器）',
+      );
+    }
     if (!sku) throw new BadRequestException('请先提供 SKU');
     const env: NodeJS.ProcessEnv = { ...process.env, DS_API: 'http://localhost:3101' };
     if (authToken) env.DS_TOKEN = authToken.replace(/^Bearer\s+/i, '');
@@ -118,14 +132,17 @@ export class AgentService {
     return { record: rec, channel: b };
   }
 
-  /** 自检：Chrome 调试端口 + ds 后端 */
-  async doctor(): Promise<{ chrome: boolean; ds: boolean; agentDir: string }> {
+  /** 自检：功能开关 + Chrome 调试端口 + ds 后端 */
+  async doctor(): Promise<{ enabled: boolean; chrome: boolean; ds: boolean; agentDir: string }> {
+    const enabled = this.enabled;
     let chrome = false;
-    try {
-      const r = await fetch('http://127.0.0.1:9222/json/version', { signal: AbortSignal.timeout(3000) });
-      chrome = r.ok;
-    } catch {
-      chrome = false;
+    if (enabled) {
+      try {
+        const r = await fetch('http://127.0.0.1:9222/json/version', { signal: AbortSignal.timeout(3000) });
+        chrome = r.ok;
+      } catch {
+        chrome = false;
+      }
     }
     let ds = false;
     try {
@@ -135,7 +152,7 @@ export class AgentService {
     } catch {
       ds = false;
     }
-    return { chrome, ds, agentDir: AGENT_DIR };
+    return { enabled, chrome, ds, agentDir: AGENT_DIR };
   }
 
   /** 拉起 agent 子进程，等它打印 `@@RESULT@@<json>` 后解析 */

@@ -27,8 +27,8 @@ export default function ProductsPage() {
   const [selected, setSelected] = useState<number[]>([]);
   const [deleting, setDeleting] = useState(false);
 
-  /** 卢布→人民币 汇率（1₽=¥），默认 0.0862，从定价设置读取当前值 */
-  const [rate, setRate] = useState(0.0862);
+  /** 卢布→人民币 汇率（1₽=¥），默认 0.0788，从定价设置读取当前值 */
+  const [rate, setRate] = useState(0.0788);
 
   /** 规则标签筛选项（从当前已加载列表里的 tags 汇总去重，供筛选下拉用） */
   // 表头排序（后端支持 sortBy + order）。不记下来的话，翻页时排序会丢
@@ -184,7 +184,7 @@ export default function ProductsPage() {
   const loadRate = async () => {
     try {
       const { data } = await http.get('/pricing/settings');
-      setRate(Number(data.exchangeRate) || 0.0862);
+      setRate(Number(data.exchangeRate) || 0.0788);
     } catch (e) {
       /* 读不到就用默认汇率，不影响列表 */
     }

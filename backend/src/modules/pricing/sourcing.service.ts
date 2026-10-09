@@ -591,6 +591,23 @@ export class SourcingService {
   }
 
   /**
+   * 人民币 → 卢布 的换算系数（1 ¥ = N ₽）。取定价参数里的 `rubPerCny`，
+   * 退而用 `exchangeRate` 的倒数，最后兜底 1/0.0788（与前端、插件保持一致）。
+   */
+  private async getRubPerCny(): Promise<number> {
+    try {
+      const row: any = await this.prisma.pricingSetting.findUnique({ where: { id: 1 } });
+      const v = Number(row?.rubPerCny);
+      if (Number.isFinite(v) && v > 0) return v;
+      const e = Number(row?.exchangeRate);
+      if (Number.isFinite(e) && e > 0) return 1 / e;
+    } catch {
+      /* 老库没这些字段时走兜底 */
+    }
+    return 1 / 0.0788;
+  }
+
+  /**
    * 1688 抓取的出口代理。优先级：环境变量 ALI1688_PROXY > 数据库 PricingSetting.ali1688Proxy。
    * 只在机房 IP 被风控时才需要（表现为返回 600 字节的 x5secdata 滑块页）。
    */
@@ -1778,6 +1795,7 @@ export class SourcingService {
     const storeId = await this.resolveStoreId(authHeader);
     const items = Array.isArray(dto?.items) ? dto.items : [];
     const sourceUrl = dto?.sourceUrl ? String(dto.sourceUrl).slice(0, 990) : null;
+    const rubPerCny = await this.getRubPerCny(); // 页面若把价格渲染成 ¥，用它换算回卢布
     let created = 0;
     let updated = 0;
     let skipped = 0;
@@ -1795,7 +1813,19 @@ export class SourcingService {
       // 反爬/错误页标题、第三方插件浮层文本、促销标签/价格串，都不当标题入库
       if (title && !BAD_TITLE_RE.test(title) && !WIDGET_TITLE_RE.test(title) && !isJunkTitle(title)) put('title', title, 490);
       const p = toNum(it.price);
-      if (p !== null) data.price = p;
+      /*
+       * Ozon 有时把卡片价渲染成 ¥（人民币），此时上报的 price 就是**人民币值**。
+       * 必须换算回卢布再入库，否则「跟卖价 / 定价是否高于跟卖价 / 商品库的¥列」会整体错一个汇率
+       * （2026-10-09 查实线上 608 条：789 ₽ 被存成了 61.88）。原始人民币值留档到 raw.priceCny。
+       */
+      const priceSym = String(it?.priceSymbol || '').trim();
+      let priceCny: number | null = null;
+      let priceRub = p;
+      if (p !== null && priceSym === '¥' && rubPerCny > 0) {
+        priceRub = Math.round(p * rubPerCny * 100) / 100;
+        priceCny = p;
+      }
+      if (priceRub !== null) data.price = priceRub;
       const img = toStr(it.imageUrl);
       if (img && isRealImg(img)) put('imageUrl', img, 990);
       put('productUrl', toStr(it.productUrl), 990);
@@ -1815,13 +1845,15 @@ export class SourcingService {
             }))
         : [];
       // 列表页卡片上也挂着选品插件的浮层（月销/佣金/类目等），有就一并映射入库
-      // 顺手把「抓到的币种符号」留档到 raw：用户浏览器里价格可能显示成 ¥（值仍是卢布量级），
-      // 存下来便于日后核对是不是被本地化换算过（不参与计算，只做诊断）。
-      const sym = it?.priceSymbol ? { priceSymbol: String(it.priceSymbol).slice(0, 4) } : {};
+      // 顺手把「抓到的币种符号」留档到 raw（诊断用）。注意：这里**不再假设**「显示成 ¥ 也只是符号
+      // 本地化、数值仍是卢布」——那个假设已被 608 条实测数据证伪；价格已在上面按符号归一成卢布，
+      // 原始人民币值存进 raw.priceCny 供对账。
+      const sym: any = it?.priceSymbol ? { priceSymbol: String(it.priceSymbol).slice(0, 4) } : {};
+      if (priceCny != null) sym.priceCny = priceCny;
       if (it.pluginCard && typeof it.pluginCard === 'object') {
         applyPluginCard(data, it.pluginCard);
         data.raw = { from: 'list', sourceUrl, pluginCard: it.pluginCard, ...sym, ...(tags.length ? { tags } : {}) };
-      } else if (sourceUrl || tags.length || sym.priceSymbol) {
+      } else if (sourceUrl || tags.length || sym.priceSymbol || priceCny != null) {
         data.raw = { from: 'list', sourceUrl, ...sym, ...(tags.length ? { tags } : {}) };
       }
       data.lastSeenAt = new Date();

@@ -84,6 +84,8 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
   const [booted, setBooted] = useState(false);
 
   // ---------------- 浏览器 Agent 核价（一键图搜） ----------------
+  // agentEnabled：后端总开关（服务器部署下关闭，因为连不到用户本机 Chrome）
+  const [agentEnabled, setAgentEnabled] = useState<boolean | null>(null);
   const [chromeReady, setChromeReady] = useState<boolean | null>(null);
   const [agentSku, setAgentSku] = useState<string>('');
   const [agentSell, setAgentSell] = useState<number | null>(null);
@@ -115,11 +117,14 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
     probeLocalApi().then((ok) => setLocalReady(ok));
   }, []);
 
-  // 浏览器 Agent 用本机 Chrome 图搜，先确认调试端口（9222）已开
+  // 浏览器 Agent 用本机 Chrome 图搜，先确认功能开关 + 调试端口（9222）已开
   useEffect(() => {
     http
       .get('/agent/doctor')
-      .then((r) => setChromeReady(!!r.data?.chrome))
+      .then((r) => {
+        setAgentEnabled(r.data?.enabled !== false);
+        setChromeReady(!!r.data?.chrome);
+      })
       .catch(() => setChromeReady(null));
   }, []);
 
@@ -424,7 +429,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
           agentRate: Number(all.agentRate || 0) / 100,
           withdrawRate: Number(all.withdrawRate || 0) / 100,
           markupRate: Number(all.markupRate || 0) / 100,
-          exchangeRate: Number(all.exchangeRate || 0.0862),
+          exchangeRate: Number(all.exchangeRate || 0.0788),
           includeUnavailable: true,
         };
         const useId = preferChannelId ?? channelId;
@@ -558,8 +563,8 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
         widthCm: Number(all.widthCm || 0),
         heightCm: Number(all.heightCm || 0),
         sellPrice: manualPrice != null ? Number(manualPrice) : selected.sellPrice,
-        sellPriceRub: Number((((manualPrice != null ? Number(manualPrice) : selected.sellPrice) / Number(all.exchangeRate || 0.0862)).toFixed(2))),
-        exchangeRate: Number(all.exchangeRate || 0.0862),
+        sellPriceRub: Number((((manualPrice != null ? Number(manualPrice) : selected.sellPrice) / Number(all.exchangeRate || 0.0788)).toFixed(2))),
+        exchangeRate: Number(all.exchangeRate || 0.0788),
         labelFee: Number(all.labelFee || 0),
         commissionRate: Number(all.commissionRate || 0) / 100,
         agentRate: Number(all.agentRate || 0) / 100,
@@ -723,7 +728,7 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
                   )}
                   <div style={{ maxWidth: 460 }}>
                     <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                      {product.sku} · ¥{money((product.priceRub || 0) * (settings?.exchangeRate || 0.0862))} / ₽{money(product.priceRub, 0)}
+                      {product.sku} · ¥{money((product.priceRub || 0) * (settings?.exchangeRate || 0.0788))} / ₽{money(product.priceRub, 0)}
                     </div>
                     <div style={{ fontSize: 12, color: '#666' }}>{product.title}</div>
                     <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
@@ -940,8 +945,14 @@ export default function WorkbenchTab({ settings, onSaved }: { settings: any; onS
           </Form>
         </Card>
 
-        {/* 浏览器 Agent 一键核价：点按钮 → 后端拉起 agent 子进程驱动本机 Chrome 图搜 → 这里点选同款 → 后端抓价算价落库 */}
-        <Card size="small" title="浏览器 Agent 一键核价（图搜）" style={{ marginTop: 12 }}>
+        {/* 浏览器 Agent 一键核价：点按钮 → 后端拉起 agent 子进程驱动本机 Chrome 图搜 → 这里点选同款 → 后端抓价算价落库。
+            服务器（云）部署下后端连不到用户本机的 Chrome（127.0.0.1:9222 是服务器自己），
+            后端会用 AGENT_ENABLED=false 关闭该功能，这里整张卡片隐藏，避免点了只报错。 */}
+        <Card
+          size="small"
+          title="浏览器 Agent 一键核价（图搜）"
+          style={{ marginTop: 12, display: agentEnabled === false ? 'none' : undefined }}
+        >
           <Alert
             type={chromeReady === false ? 'warning' : 'info'}
             showIcon

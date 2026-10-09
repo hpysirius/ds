@@ -706,7 +706,7 @@ export class PricingService {
     assertExcelPath(filePath);
 
     const settings = await this.getSettings();
-    const rate = num(settings.exchangeRate) || 0.0862;
+    const rate = num(settings.exchangeRate) || 0.0788;
     const rows = parsePricingSheet(filePath, sheetName);
 
     /*

@@ -115,6 +115,11 @@ CHROME_DEBUG_PROFILE="/tmp/chrome_debug_profile"
 CHROME_APP_PATH="/tmp/ChromeDebug.app"
 UPLOAD_DIR="./uploads"
 MAX_FILE_SIZE=10485760
+# 浏览器 Agent（1688 图搜核价）总开关：线上必须关。
+# 该功能的原理是「后端进程连 127.0.0.1:9222 驱动 Chrome」，而服务器上的 127.0.0.1 是服务器自己，
+# 连不到用户本机的浏览器；且服务器无头环境下 1688 图搜一律返回空结果。
+# 只有「ds 后端与 Chrome 在同一台机器」时（本机部署）才设成 true。
+AGENT_ENABLED=false
 ENV
 
 # NEXT_PUBLIC_API_URL 必须是「相对路径 /api」：

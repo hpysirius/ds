@@ -160,7 +160,7 @@ export default function PricingRecords() {
       widthCm: r.widthCm ?? 0,
       heightCm: r.heightCm ?? 0,
       sellPrice: r.sellPrice ?? 0,
-      exchangeRate: r.exchangeRate ?? 0.0862,
+      exchangeRate: r.exchangeRate ?? 0.0788,
       shippingFee: r.shippingFee ?? 0,
       billWeightKg: r.billWeightKg ?? 0,
       labelFee: r.labelFee ?? 2,

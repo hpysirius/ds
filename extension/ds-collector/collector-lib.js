@@ -195,6 +195,8 @@ export function collectProduct() {
  *   主图      img[src]（alt 通常就是商品名，是最稳的标题来源）
  *   标题      class 含 tsBody 的文本（Ozon 设计系统排版类，构建期哈希变但前缀稳定）
  *   价格      class 含 tsHeadline 的文本，形如 "479 ₽" 或 "25,13 ₽42,12 ₽-40%"
+ *            ⚠️ 优先取带 ₽ 的；只有整张卡片都没有 ₽ 时才退回 ¥（那说明页面把价渲染成了人民币，
+ *               此时数值就是人民币，后端会按下发的汇率换算回卢布再入库）
  *
  * ⚠️ 关键：Ozon 会按账号语言把界面本地化 —— 俄语/中文都见过，促销标签会变成「还剩5件新品」这类中文。
  * 所以文案特征必须**同时覆盖俄语和中文**，否则促销标签会被当成商品名（实测踩过）。
@@ -242,9 +244,10 @@ export function collectList() {
    * 从一段文本里取「现价」+ 币种符号：第一处货币符号前的数字就是现价。
    * 中文/俄语小数都是逗号，千分位是空格 —— "25,13 ₽42,12 ₽-40%" → 25.13。
    *
-   * ⚠️ 币种符号必须是「所有常见符号」而不是只认 ₽：实测用户的浏览器里价格显示成 **¥**
-   * （中文界面 + 货币符号被本地化/替换成 ¥，数值仍是卢布量级），原来只匹配 ₽ 导致价格全丢、
-   * 且价格串因为「不含 ₽」被当成商品名存进库（这就是商品名错误的直接原因）。
+   * ⚠️ 币种符号必须认「所有常见符号」而不是只认 ₽：实测用户的浏览器里价格会显示成 **¥**。
+   *    注意 ¥ 有两种可能：① 只是符号被本地化（数值仍是卢布）；② **数值本身就是人民币**——
+   *    2026-10-09 实测确认线上有 608 条属于第 ② 种（如 789 ₽ 存成了 61.88）。
+   *    所以本函数只负责原样解析「数值 + 符号」，币种口径统一交给后端按符号换算。
    */
   const parsePrice = (t) => {
     const m = String(t || '').match(/(\d[\d\s\u00a0]*)(?:[.,](\d{1,2}))?\s*([₽¥$€])/);
@@ -347,19 +350,26 @@ export function collectList() {
       cands.push({ t: t, cls: String(els[j].className || '') });
     }
 
-    // ── 价格：优先 class 含 tsHeadline 的（Ozon 价格排版），否则取最短的含货币符号文本块
-    //    注意货币符号可能是 ₽ 也可能被本地化成 ¥（实测），所以两种都要认
-    let priceText = '';
-    for (let j = 0; j < cands.length; j++) {
-      if (/tsHeadline/i.test(cands[j].cls) && PRICEY.test(cands[j].t)) { priceText = cands[j].t; break; }
-    }
-    if (!priceText) {
+    // ── 价格：**一律优先取卢布(₽)**，取不到才退回 ¥。
+    //    原因（2026-10-09 查实）：Ozon 有时把卡片价渲染成 ¥（人民币），早期版本直接把 ¥ 值当价格入库，
+    //    导致跟卖价/定价比较整体错了一个汇率（线上 608 条）。所以这里两轮挑选：
+    //      第一轮只要含 ₽ 的候选（tsHeadline 优先，再退最短文本块）
+    //      第二轮（一个 ₽ 都没有）才接受 ¥ —— 此时把符号一并上报，由后端按汇率换算回卢布。
+    const pickPriceText = (needRub) => {
+      for (let j = 0; j < cands.length; j++) {
+        const t = cands[j].t;
+        if (/tsHeadline/i.test(cands[j].cls) && PRICEY.test(t) && (!needRub || t.indexOf('₽') >= 0)) return t;
+      }
+      let best = '';
       for (let j = 0; j < cands.length; j++) {
         const t = cands[j].t;
         if (!PRICEY.test(t) || t.length > 60) continue;
-        if (!priceText || t.length < priceText.length) priceText = t;
+        if (needRub && t.indexOf('₽') < 0) continue;
+        if (!best || t.length < best.length) best = t;
       }
-    }
+      return best;
+    };
+    const priceText = pickPriceText(true) || pickPriceText(false);
     const pp = parsePrice(priceText);
     const price = pp.value;
 
