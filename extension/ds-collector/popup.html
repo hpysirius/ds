@@ -191,6 +191,10 @@
         <button id="memoGrab1688" style="flex:1">抓 1688 页（成本/尺寸）</button>
       </div>
 
+      <div class="row">
+        <select id="memoSkuSel" class="sel"><option value="">（抓 1688 后选规格）</option></select>
+      </div>
+
       <div class="grid">
         <label>成本 ¥<input id="memoCost" type="number" step="0.01" /></label>
         <label>重量 kg<input id="memoWt" type="number" step="0.001" /></label>
@@ -206,7 +210,7 @@
 
       <div class="hint">
         「取当前页」会<b>自动分辨站点</b>：在 <b>1688</b> 页填「货源链接」，在 <b>Ozon</b> 页填「Ozon 链接」，并带上商品名 + SKU + <b>跟卖价</b>。<br />
-        在 <b>Ozon 商品页</b>点「抓 Ozon 页」会把在售价（跟卖价）抓下来；在 <b>1688 货品页</b>点「抓 1688 页」会把成本、重量、尺寸与包装信息一并抓下来。<br />
+        在 <b>Ozon 商品页</b>点「抓 Ozon 页」会把在售价（跟卖价）抓下来；在 <b>1688 货品页</b>点「抓 1688 页」会把成本、重量、尺寸与包装信息一并抓下来，<b>切换规格下拉</b>会自动带出该规格的价格/重量/尺寸，选中的规格名会存进记录。<br />
         ⚠ 跟卖价按 <b>页面原币种</b>上报（Ozon 有时会显示 ¥），后端统一折成 ₽ 存，避免像商品库那样把 ¥ 当 ₽。<br />
         同一个 <b>SKU 只会有一条记录</b>：先记 1688、再记 Ozon 会自动合并（只补空字段）。存进后台<b>「自采购」</b>页，跟采集比价的表完全分开。
       </div>

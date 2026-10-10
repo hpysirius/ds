@@ -385,6 +385,7 @@ model SelfPurchase {
   id  Int     @id @default(autoincrement())
   sku String? @db.VarChar(40) // Ozon SKU（Ozon ↔ 1688 的关联主键；不贴链接也能从 Ozon 链接自动解析）
   name String? @db.VarChar(200) // 产品备注 / 自选商品名（xls「产品备注」列）
+  specName String? @db.VarChar(255) // 1688 规格名（插件「抓 1688 页」选中规格时带上，如「蓝色」）
 
   /// 上架状态：editing 编辑中 / listed 已上架 / delisted 已下架
   status String @default("editing") @db.VarChar(20)

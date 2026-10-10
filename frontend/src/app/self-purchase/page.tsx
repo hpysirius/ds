@@ -362,6 +362,9 @@ export default function SelfPurchasePage() {
                 '未关联'
               )}
             </div>
+            {r.specName ? (
+              <div style={{ fontSize: 11, color: '#999' }}>规格：{r.specName}</div>
+            ) : null}
             <Tag color={r.source === 'plugin' ? 'green' : 'default'} style={{ margin: '2px 0 0', fontSize: 11 }}>
               {r.source === 'plugin' ? '插件记录' : '手动录入'}
             </Tag>
@@ -674,6 +677,14 @@ export default function SelfPurchasePage() {
             </Form.Item>
             <Form.Item name="name" label="商品名称 / 备注" style={{ flex: '1 1 260px' }}>
               <Input placeholder="如：B10007银 手链 / 羊年2027中号" />
+            </Form.Item>
+            <Form.Item
+              name="specName"
+              label="1688 规格"
+              tooltip="插件「抓 1688 页」选中规格时自动带上（如「蓝色」），也可手填"
+              style={{ flex: '0 1 180px' }}
+            >
+              <Input placeholder="如：蓝色" allowClear />
             </Form.Item>
             <Form.Item name="status" label="上架状态" style={{ flex: '0 0 120px' }}>
               <Select options={STATUS_OPTIONS} />

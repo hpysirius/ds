@@ -55,6 +55,12 @@ export class CreateSelfPurchaseDto {
   @MaxLength(200)
   name?: string;
 
+  @ApiPropertyOptional({ description: '1688 规格名（插件抓 1688 页时选中的规格，如「蓝色」）' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  specName?: string;
+
   @ApiPropertyOptional({ description: '上架状态：editing 编辑中 / listed 已上架 / delisted 已下架' })
   @IsOptional()
   @IsIn(['editing', 'listed', 'delisted'])

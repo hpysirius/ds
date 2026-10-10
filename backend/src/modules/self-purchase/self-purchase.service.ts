@@ -48,6 +48,7 @@ const DECIMAL_FIELDS = [
 const WRITABLE_FIELDS = [
   'sku',
   'name',
+  'specName',
   'status',
   'supplyUrl',
   'retailUrl',
@@ -567,6 +568,7 @@ export class SelfPurchaseService {
     const head = [
       'SKU',
       '商品名称',
+      '规格',
       '上架状态',
       '俄语标题',
       '俄语内容',
@@ -615,6 +617,7 @@ export class SelfPurchaseService {
         [
           f.sku || '',
           f.name || '',
+          f.specName || '',
           STATUS_TEXT[f.status] || f.status || '',
           f.titleRu || '',
           f.descRu || '',

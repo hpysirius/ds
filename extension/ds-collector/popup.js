@@ -347,6 +347,7 @@ send({ type: 'DS_SYNC_RULES' });
 /* ─────────── 记一笔（自采购备忘录）─────────── */
 
 let memoPackText = ''; // 最近一次从 1688 抓到的「包装信息原文」，保存时一并上报
+let memoSpecName = ''; // 记一笔规格下拉里当前选中的 1688 规格名，保存时存 specName
 let memoOzonData = null; // 最近一次从 Ozon 抓到的数据（跟卖价 / 主图 …），保存时一并上报
 
 /**
@@ -493,6 +494,17 @@ $('memoGrabOzon').onclick = async () => {
   }
 };
 
+/** 把记一笔下拉选中的规格数值写进成本/重量/长宽高（与回填核价区的 applySkuToForm 同款口径） */
+function applySpecToMemo(s) {
+  if (!s) return;
+  if (s.price != null) $('memoCost').value = Number(s.price);
+  if (s.weightG != null) $('memoWt').value = Number((Number(s.weightG) / 1000).toFixed(4));
+  // 1688 没填尺寸时是占位 1×1×1，别填进去误导
+  $('memoL').value = s.lengthCm != null && s.lengthCm > 1 ? s.lengthCm : '';
+  $('memoW').value = s.widthCm != null && s.widthCm > 1 ? s.widthCm : '';
+  $('memoH').value = s.heightCm != null && s.heightCm > 1 ? s.heightCm : '';
+}
+
 /** 「抓当前 1688 页」：把货品信息填进备忘录表单（成本 / 重量 / 尺寸 / 包装） */
 $('memoGrab1688').onclick = async () => {
   const btn = $('memoGrab1688');
@@ -505,26 +517,27 @@ $('memoGrab1688').onclick = async () => {
     const d = r.result || {};
     supply1688 = d; // 与「回填核价页」区共享，保存时按「抓取录入」留痕
     const skus = d.skus || [];
-    // 默认选最便宜的那个规格（通常是单件最低配）
-    let s = skus[0];
+
+    // 规格下拉：和「回填核价页」的 skuSel 同款，默认选最便宜的规格（通常是单件最低配）
+    const sel = $('memoSkuSel');
+    sel.innerHTML = skus.length
+      ? skus.map((x, i) => `<option value="${i}">${escapeHtml(fmtSku(x))}</option>`).join('')
+      : '<option value="">（没抓到规格，手填数值）</option>';
+    let idx = 0;
     let best = Infinity;
-    skus.forEach((x) => {
+    skus.forEach((x, i) => {
       if (x.price != null && x.price < best) {
         best = x.price;
-        s = x;
+        idx = i;
       }
     });
+    sel.value = String(idx);
 
     if (d.title && !$('memoName').value) $('memoName').value = String(d.title).slice(0, 200);
     if (d.offerUrl) $('memoUrl').value = d.offerUrl;
-    if (s) {
-      if (s.price != null) $('memoCost').value = Number(s.price);
-      if (s.weightG != null) $('memoWt').value = Number((Number(s.weightG) / 1000).toFixed(4));
-      // 1688 没填尺寸时是占位 1×1×1，别填进去误导
-      $('memoL').value = s.lengthCm != null && s.lengthCm > 1 ? s.lengthCm : '';
-      $('memoW').value = s.widthCm != null && s.widthCm > 1 ? s.widthCm : '';
-      $('memoH').value = s.heightCm != null && s.heightCm > 1 ? s.heightCm : '';
-    }
+    const s = skus[idx];
+    applySpecToMemo(s);
+    memoSpecName = s && s.name ? String(s.name).slice(0, 255) : '';
 
     // 拼一份包装信息原文（存进 self_purchases.packageText）
     const pk = d.pack || {};
@@ -543,6 +556,14 @@ $('memoGrab1688').onclick = async () => {
       btn.textContent = orig;
     }, 1800);
   }
+};
+
+// 切换规格 → 自动带出该规格的成本/重量/尺寸，并记住规格名
+$('memoSkuSel').onchange = () => {
+  const skus = (supply1688 && supply1688.skus) || [];
+  const s = skus[Number($('memoSkuSel').value)];
+  applySpecToMemo(s);
+  memoSpecName = s && s.name ? String(s.name).slice(0, 255) : '';
 };
 
 $('memoSave').onclick = async () => {
@@ -581,6 +602,7 @@ $('memoSave').onclick = async () => {
     if (h !== '') payload.heightCm = Number(h);
     if (l !== '' || w !== '' || h !== '') payload.sizeText = `${l || 0}*${w || 0}*${h || 0}`;
     if (memoPackText) payload.packageText = memoPackText;
+    if (memoSpecName) payload.specName = memoSpecName;
     // 跟卖价：连币种符号一起上报（Ozon 有时渲染成 ¥），后端统一折成 ₽ 存
     const rp = $('memoRetail').value;
     if (rp !== '') {
@@ -603,8 +625,10 @@ $('memoSave').onclick = async () => {
     );
     $('memoRetailSym').textContent = '₽';
     memoPackText = '';
+    memoSpecName = '';
     memoOzonData = null;
     supply1688 = null;
+    $('memoSkuSel').innerHTML = '<option value="">（抓 1688 后选规格）</option>';
   } catch (e) {
     alert(`记一笔失败：${e.message}`);
   } finally {

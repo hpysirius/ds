@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DS Ozon 采集助手",
-  "version": "1.7.8",
+  "version": "1.7.9",
   "description": "在正常的 Chrome 里采集 Ozon 商品数据（标题/价格/主图/类目/评论等），并上报到 ds 选品系统；也支持在 1688 货品页抓价格/重量/尺寸，一键回填到 ds 核价页。新增「记一笔」自采购备忘录：看到想卖的品随手记下 1688 链接，存到后台自采购页。不依赖调试模式，不受反爬挑战影响。",
   "permissions": ["storage", "tabs", "scripting", "activeTab"],
   "host_permissions": [
